@@ -4,7 +4,7 @@ import * as math from 'mathjs';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea, ReferenceLine, Customized,
 } from 'recharts';
-import { Upload, Trash2, Eye, EyeOff, Sparkles, X, Download, ZoomIn, Move, RotateCcw, Pencil } from 'lucide-react';
+import { Upload, Trash2, Eye, EyeOff, Sparkles, X, Download, ZoomIn, Move, RotateCcw, Pencil, Camera, GripVertical } from 'lucide-react';
 
 const COLORS = ['#0d9488', '#d97706', '#db2777', '#4f46e5', '#65a30d', '#ea580c', '#0284c7', '#dc2626'];
 
@@ -264,12 +264,25 @@ function sanitizeSvgAttrs(el) {
 function buildExportSvg(originalSvg, legendItems, fallbackWidth, fallbackHeight) {
   const ns = 'http://www.w3.org/2000/svg';
   let width = Number(originalSvg.getAttribute('width'));
-  let height = Number(originalSvg.getAttribute('height'));
+  let heightAttr = Number(originalSvg.getAttribute('height'));
   if (!Number.isFinite(width) || width <= 0) width = fallbackWidth || 600;
-  if (!Number.isFinite(height) || height <= 0) height = fallbackHeight || 300;
+  if (!Number.isFinite(heightAttr) || heightAttr <= 0) heightAttr = fallbackHeight || 300;
+
+  // The live chart reserves extra vertical space for its on-screen HTML legend, which isn't
+  // part of the cloned SVG — use the actual x-axis position instead of the raw container height
+  // so we don't leave a big blank gap before our own drawn legend.
+  let plotBottom = heightAttr;
+  const axisLine = originalSvg.querySelector('.recharts-yAxis line.recharts-cartesian-axis-line');
+  if (axisLine) {
+    const y1 = parseFloat(axisLine.getAttribute('y1'));
+    const y2 = parseFloat(axisLine.getAttribute('y2'));
+    if (Number.isFinite(y1) && Number.isFinite(y2)) plotBottom = Math.max(y1, y2);
+  }
+  const contentBottom = Math.min(heightAttr, plotBottom + 42); // room for x-axis tick labels + axis title
+
   const legendRowH = 22;
   const legendH = legendItems.length ? legendRowH + 14 : 0;
-  const totalH = height + legendH;
+  const totalH = contentBottom + legendH;
 
   const newSvg = document.createElementNS(ns, 'svg');
   newSvg.setAttribute('xmlns', ns);
@@ -294,7 +307,7 @@ function buildExportSvg(originalSvg, legendItems, fallbackWidth, fallbackHeight)
 
   if (legendItems.length) {
     let x = 10;
-    const y = height + 22;
+    const y = contentBottom + 22;
     legendItems.forEach((item) => {
       const rect = document.createElementNS(ns, 'rect');
       rect.setAttribute('x', x);
@@ -454,7 +467,8 @@ export default function THzAnalyzer() {
   const [freqDomain, setFreqDomain] = useState(null);
   const [timeYDomain, setTimeYDomain] = useState(null);
   const [freqYDomain, setFreqYDomain] = useState(null);
-  const [timeMode, setTimeMode] = useState('zoom'); // 'zoom' | 'pan'
+  const [timeMode, setTimeMode] = useState('zoom'); // 'zoom' | 'pan' | 'snapshot'
+  const [snapshots, setSnapshots] = useState([]); // [{ id, time, entries: [{id,name,color,value}] }]
   const [freqMode, setFreqMode] = useState('zoom');
   const [timeSel, setTimeSel] = useState({ x1: null, x2: null, y1: null, y2: null });
   const [freqSel, setFreqSel] = useState({ x1: null, x2: null, y1: null, y2: null });
@@ -479,6 +493,16 @@ export default function THzAnalyzer() {
   const resetTimeView = () => { setTimeDomain(null); setTimeYDomain(null); setTimeSel(emptySel); };
   const resetFreqView = () => { setFreqDomain(null); setFreqYDomain(null); setFreqSel(emptySel); };
 
+  const takeSnapshot = (xVal) => {
+    if (xVal == null || !Number.isFinite(xVal)) return;
+    const entries = visible.map((d) => {
+      const val = interpolateSeries(d.time, d.amplitude, [xVal])[0];
+      return { id: d.id, name: d.name, color: d.color, value: typeof val === 'number' ? val : null };
+    });
+    if (!entries.length) return;
+    setSnapshots((prev) => [...prev, { id: `snap_${Date.now()}_${Math.random().toString(36).slice(2)}`, time: xVal, entries }]);
+  };
+
   const handleMouseDown = (e, chart) => {
     if (!e) return;
     if (chart === 'time') {
@@ -487,6 +511,8 @@ export default function THzAnalyzer() {
         timeYScaleRef.current = makeYScale(getYPixelRange(timeChartWrapRef.current), activeYDomain);
         const yVal = timeYScaleRef.current ? timeYScaleRef.current.pxToVal(e.chartY) : null;
         setTimeSel({ x1: e.activeLabel, x2: e.activeLabel, y1: yVal, y2: yVal });
+      } else if (timeMode === 'snapshot') {
+        takeSnapshot(e.activeLabel);
       } else {
         panRef.current = { dragging: true, startX: e.chartX, startDomain: timeDomain || timeFullDomain, chart: 'time' };
       }
@@ -594,6 +620,40 @@ export default function THzAnalyzer() {
   const loadSamples = () => setDatasets((prev) => [...prev, ...makeSampleSet()]);
   const clearAll = () => { fftCacheRef.current.clear(); setDatasets([]); };
   const removeDataset = (id) => { fftCacheRef.current.delete(id); setDatasets((prev) => prev.filter((d) => d.id !== id)); };
+
+  const [dragIndex, setDragIndex] = useState(null);
+  const [dragOverIndex, setDragOverIndex] = useState(null);
+
+  const handleDragStart = (e, index) => {
+    setDragIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(index));
+  };
+  const handleDragOverRow = (e, index) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverIndex !== index) setDragOverIndex(index);
+  };
+  const handleDropRow = (e, index) => {
+    e.preventDefault();
+    if (dragIndex === null || dragIndex === index) {
+      setDragIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+    setDatasets((prev) => {
+      const arr = [...prev];
+      const [moved] = arr.splice(dragIndex, 1);
+      arr.splice(index, 0, moved);
+      return arr;
+    });
+    setDragIndex(null);
+    setDragOverIndex(null);
+  };
+  const handleDragEnd = () => {
+    setDragIndex(null);
+    setDragOverIndex(null);
+  };
   const updateDataset = (id, patch) => setDatasets((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
 
   const handleModeChange = (mode) => {
@@ -749,6 +809,17 @@ export default function THzAnalyzer() {
   const fmt = (v, digits = 2) => (Number.isFinite(v) ? v.toFixed(digits) : '—');
   const roundDisp = (v) => (Number.isFinite(v) ? Number(v.toPrecision(6)) : v);
 
+  const snapshotColumns = useMemo(() => {
+    const seen = new Map();
+    snapshots.forEach((s) => s.entries.forEach((en) => {
+      if (!seen.has(en.id)) seen.set(en.id, { id: en.id, name: en.name, color: en.color });
+    }));
+    return Array.from(seen.values());
+  }, [snapshots]);
+
+  const clearSnapshots = () => setSnapshots([]);
+  const removeSnapshot = (id) => setSnapshots((prev) => prev.filter((s) => s.id !== id));
+
   const sortValueOf = (d, key) => {
     if (key === 'peakToPeak') return d.peakToPeak;
     if (key === 'peakFreq') return d.peakFreq;
@@ -880,9 +951,23 @@ export default function THzAnalyzer() {
               {datasets.length === 0 && (
                 <p className="text-xs text-slate-600 py-2">No datasets loaded. Upload a two-column time/amplitude .csv or .txt file, or load sample data to try the tool.</p>
               )}
-              {datasets.map((d) => (
-                <div key={d.id} className="rounded bg-white border border-slate-400 px-2 py-1.5 space-y-1">
+              {datasets.map((d, index) => (
+                <div
+                  key={d.id}
+                  onDragOver={(e) => handleDragOverRow(e, index)}
+                  onDrop={(e) => handleDropRow(e, index)}
+                  className={`rounded bg-white border px-2 py-1.5 space-y-1 transition ${dragOverIndex === index && dragIndex !== null && dragIndex !== index ? 'border-teal-500 border-2' : 'border-slate-400'} ${dragIndex === index ? 'opacity-40' : ''}`}
+                >
                   <div className="flex items-center gap-2">
+                    <span
+                      draggable
+                      onDragStart={(e) => handleDragStart(e, index)}
+                      onDragEnd={handleDragEnd}
+                      title="Drag to reorder"
+                      className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-700 flex-shrink-0"
+                    >
+                      <GripVertical size={13} />
+                    </span>
                     <input
                       type="color"
                       value={/^#[0-9a-fA-F]{6}$/.test(d.color) ? d.color : '#000000'}
@@ -906,7 +991,7 @@ export default function THzAnalyzer() {
                       <Trash2 size={13} />
                     </button>
                   </div>
-                  <div className="flex items-center gap-2 pl-7 text-xs text-slate-600">
+                  <div className="flex items-center gap-2 pl-9 text-xs text-slate-600">
                     <span>Hex</span>
                     <input
                       value={d.color}
@@ -1174,6 +1259,13 @@ export default function THzAnalyzer() {
                   <Move size={12} /> Pan
                 </button>
                 <button
+                  onClick={() => setTimeMode('snapshot')}
+                  title="Click points on the plot to record y-values below"
+                  className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${timeMode === 'snapshot' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                >
+                  <Camera size={12} /> Snapshot
+                </button>
+                <button
                   onClick={resetTimeView}
                   title="Reset to full view"
                   className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
@@ -1220,10 +1312,70 @@ export default function THzAnalyzer() {
                   {timeMode === 'zoom' && timeSel.x1 != null && timeSel.x2 != null && (
                     <ReferenceArea x1={timeSel.x1} x2={timeSel.x2} y1={timeSel.y1} y2={timeSel.y2} strokeOpacity={0.4} stroke="#0d9488" fill="#0d9488" fillOpacity={0.15} />
                   )}
+                  {snapshots.map((s) => (
+                    <ReferenceLine key={s.id} x={s.time} stroke="#0f766e" strokeDasharray="2 2" strokeWidth={1} ifOverflow="extendDomain" />
+                  ))}
                 </LineChart>
               </ResponsiveContainer>
             </div>
           </div>
+
+          {timeMode === 'snapshot' && (
+            <div className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm overflow-x-auto">
+              <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Snapshot points ({snapshots.length})</p>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={clearSnapshots}
+                    disabled={!snapshots.length}
+                    className="flex items-center gap-1 text-xs text-slate-800 hover:text-red-700 border border-slate-400 rounded px-2 py-1 hover:border-red-400 hover:bg-red-50 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Trash2 size={12} /> Clear
+                  </button>
+                </div>
+              </div>
+              {snapshots.length === 0 ? (
+                <p className="text-xs text-slate-600">Click anywhere on the time-domain plot above to record the y-value of every visible dataset at that x-position.</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-slate-600 border-b border-slate-400">
+                      <th className="text-right font-normal py-2 pr-4">Time ({timeUnit})</th>
+                      {snapshotColumns.map((c) => (
+                        <th key={c.id} className="text-right font-normal py-2 pr-4">
+                          <span className="inline-flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: c.color }} />
+                            {c.name}
+                          </span>
+                        </th>
+                      ))}
+                      <th className="w-6" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapshots.map((s) => (
+                      <tr key={s.id} className="border-b border-slate-300">
+                        <td className="text-right pr-4 font-mono">{fmt(s.time, 4)}</td>
+                        {snapshotColumns.map((c) => {
+                          const en = s.entries.find((e) => e.id === c.id);
+                          return (
+                            <td key={c.id} className="text-right pr-4 font-mono">
+                              {en && en.value != null ? fmt(en.value, 6) : '—'}
+                            </td>
+                          );
+                        })}
+                        <td className="text-right">
+                          <button onClick={() => removeSnapshot(s.id)} className="text-slate-400 hover:text-red-600">
+                            <X size={12} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
 
           <div className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between mb-2">
