@@ -2,7 +2,7 @@ import React, { useState, useMemo, useCallback, useRef } from 'react';
 import Papa from 'papaparse';
 import * as math from 'mathjs';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea, ReferenceLine, Customized,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea, ReferenceLine, Customized, ComposedChart, Scatter,
 } from 'recharts';
 import { Upload, Trash2, Eye, EyeOff, Sparkles, X, Download, ZoomIn, Move, RotateCcw, Pencil, Camera, GripVertical } from 'lucide-react';
 
@@ -13,6 +13,79 @@ const DEFAULT_FREQ_DOMAIN = [0, 6];
 
 // Common strong atmospheric water-vapor absorption lines in the THz range (THz), commonly cited in THz-TDS work.
 const WATER_VAPOR_LINES = [0.557, 0.752, 0.988, 1.097, 1.113, 1.163, 1.208, 1.229, 1.412, 1.602, 1.669, 1.718, 1.796, 1.867];
+
+// Marker shapes available for the power-dependence scatter plot (native recharts Scatter shapes).
+const MARKER_TYPES = ['circle', 'square', 'diamond', 'triangle', 'star', 'cross', 'wye'];
+
+// Spreadsheet-style letter labels for snapshot points: a, b, ..., z, aa, ab, ...
+function indexToLetters(i) {
+  let s = '';
+  let n = i;
+  do {
+    s = String.fromCharCode(97 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return s;
+}
+
+// Fits amplitude(P) = Amax * P / (P + Psat) via damped Gauss-Newton (Levenberg-Marquardt style).
+// Only 2 free parameters, so a hand-rolled solver is simple and fast enough for this data size.
+function fitSaturationCurve(powers, amps) {
+  const pts = powers.map((p, i) => ({ p, a: amps[i] })).filter((pt) => Number.isFinite(pt.p) && Number.isFinite(pt.a) && pt.p > 0);
+  if (pts.length < 2) return null;
+
+  let Amax = Math.max(...pts.map((pt) => pt.a)) * 1.3 || 1;
+  const sortedP = [...pts.map((pt) => pt.p)].sort((a, b) => a - b);
+  let Psat = sortedP[Math.floor(sortedP.length / 2)] || 1;
+  if (!(Psat > 0)) Psat = 1;
+
+  let lambda = 1e-3;
+  let prevSSE = Infinity;
+
+  for (let iter = 0; iter < 200; iter++) {
+    let JTJ00 = 0, JTJ01 = 0, JTJ11 = 0, JTr0 = 0, JTr1 = 0, sse = 0;
+    for (const { p, a } of pts) {
+      const denom = p + Psat;
+      const model = (Amax * p) / denom;
+      const r = model - a;
+      const dAmax = p / denom;
+      const dPsat = -(Amax * p) / (denom * denom);
+      JTJ00 += dAmax * dAmax;
+      JTJ01 += dAmax * dPsat;
+      JTJ11 += dPsat * dPsat;
+      JTr0 += dAmax * r;
+      JTr1 += dPsat * r;
+      sse += r * r;
+    }
+    const a00 = JTJ00 * (1 + lambda);
+    const a11 = JTJ11 * (1 + lambda);
+    const det = a00 * a11 - JTJ01 * JTJ01;
+    if (Math.abs(det) < 1e-12) break;
+    const deltaAmax = (-JTr0 * a11 + JTr1 * JTJ01) / det;
+    const deltaPsat = (-a00 * JTr1 + JTJ01 * JTr0) / det;
+    const nextAmax = Amax + deltaAmax;
+    const nextPsat = Psat + deltaPsat > 0 ? Psat + deltaPsat : Psat * 0.5;
+
+    let nextSSE = 0;
+    for (const { p, a } of pts) {
+      const model = (nextAmax * p) / (p + nextPsat);
+      nextSSE += (model - a) * (model - a);
+    }
+    if (Number.isFinite(nextSSE) && nextSSE < sse) {
+      Amax = nextAmax;
+      Psat = nextPsat;
+      lambda = Math.max(lambda * 0.6, 1e-8);
+      if (Math.abs(prevSSE - nextSSE) < 1e-14) { prevSSE = nextSSE; break; }
+      prevSSE = nextSSE;
+    } else {
+      lambda *= 3;
+      if (lambda > 1e8) break;
+    }
+  }
+
+  if (!Number.isFinite(Amax) || !Number.isFinite(Psat) || Psat <= 0) return null;
+  return { Amax, Psat };
+}
 
 // ---------- signal processing helpers ----------
 
@@ -305,32 +378,40 @@ function buildExportSvg(originalSvg, legendItems, fallbackWidth, fallbackHeight)
 
   const legendRowH = 22;
   const legendH = legendItems.length ? legendRowH + 14 : 0;
-  const totalH = contentBottom + legendH;
+  const PAD = 18; // breathing room between the plot border and the image edge
+  const innerW = width;
+  const innerH = contentBottom + legendH;
+  const totalW = innerW + PAD * 2;
+  const totalH = innerH + PAD * 2;
 
   const newSvg = document.createElementNS(ns, 'svg');
   newSvg.setAttribute('xmlns', ns);
-  newSvg.setAttribute('width', width);
+  newSvg.setAttribute('width', totalW);
   newSvg.setAttribute('height', totalH);
-  newSvg.setAttribute('viewBox', `0 0 ${width} ${totalH}`);
+  newSvg.setAttribute('viewBox', `0 0 ${totalW} ${totalH}`);
   newSvg.setAttribute('font-family', 'Inter, Arial, Helvetica, sans-serif');
   newSvg.style.fontFamily = 'Inter, Arial, Helvetica, sans-serif';
 
   const bg = document.createElementNS(ns, 'rect');
   bg.setAttribute('x', 0);
   bg.setAttribute('y', 0);
-  bg.setAttribute('width', width);
+  bg.setAttribute('width', totalW);
   bg.setAttribute('height', totalH);
   bg.setAttribute('fill', '#ffffff');
   newSvg.appendChild(bg);
 
   const cloned = originalSvg.cloneNode(true);
+  // Strip leftover hover/tooltip artifacts (e.g. the cursor guide line, active-point highlight)
+  // that shouldn't appear in a static export if the mouse happened to be over the chart.
+  cloned.querySelectorAll('.recharts-tooltip-cursor, .recharts-active-dot').forEach((el) => el.remove());
   const g = document.createElementNS(ns, 'g');
+  g.setAttribute('transform', `translate(${PAD}, ${PAD})`);
   while (cloned.firstChild) g.appendChild(cloned.firstChild);
   newSvg.appendChild(g);
 
   if (legendItems.length) {
-    let x = 10;
-    const y = contentBottom + 22;
+    let x = 10 + PAD;
+    const y = contentBottom + 22 + PAD;
     legendItems.forEach((item) => {
       const rect = document.createElementNS(ns, 'rect');
       rect.setAttribute('x', x);
@@ -340,82 +421,122 @@ function buildExportSvg(originalSvg, legendItems, fallbackWidth, fallbackHeight)
       rect.setAttribute('fill', item.color);
       newSvg.appendChild(rect);
 
+      const parts = item.parts || [{ text: item.name }];
       const text = document.createElementNS(ns, 'text');
       text.setAttribute('x', x + 14);
       text.setAttribute('y', y);
       text.setAttribute('font-size', '11');
       text.setAttribute('font-family', 'Inter, sans-serif');
       text.setAttribute('fill', '#334155');
-      text.textContent = item.name;
+      parts.forEach((part) => {
+        const tspan = document.createElementNS(ns, 'tspan');
+        if (part.dy != null) tspan.setAttribute('dy', part.dy);
+        if (part.fontSize != null) tspan.setAttribute('font-size', part.fontSize);
+        tspan.textContent = part.text;
+        text.appendChild(tspan);
+      });
       newSvg.appendChild(text);
 
-      x += 24 + item.name.length * 6;
+      const totalLen = parts.reduce((sum, p) => sum + p.text.length, 0);
+      x += 24 + totalLen * 6;
     });
   }
 
   sanitizeSvgAttrs(newSvg);
 
-  return { svgEl: newSvg, width, height: totalH };
+  return { svgEl: newSvg, width: totalW, height: totalH };
 }
 
-function exportChart(wrapRef, name, legendItems, format, onError) {
-  const originalSvg = wrapRef.current ? wrapRef.current.querySelector('svg') : null;
-  if (!originalSvg) {
+async function exportChart(wrapRef, name, legendItems, format, onError, dims) {
+  const el = wrapRef.current;
+  if (!el) {
     onError(`Couldn't find a chart to export for "${name}".`);
     return;
   }
-  const fallbackWidth = wrapRef.current.clientWidth || 600;
-  const fallbackHeight = wrapRef.current.clientHeight || 300;
-  const { svgEl, width, height } = buildExportSvg(originalSvg, legendItems, fallbackWidth, fallbackHeight);
-  const serializer = new XMLSerializer();
-  const svgStr = serializer.serializeToString(svgEl);
 
-  if (format === 'svg') {
-    const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
-    saveFile(svgBlob, `${name}.svg`, 'SVG image', 'image/svg+xml', ['.svg']);
-    return;
+  const resizing = dims && dims.width > 0 && dims.height > 0;
+  let restoreWidth = null;
+  let restoreHeight = null;
+  if (resizing) {
+    restoreWidth = el.style.width;
+    restoreHeight = el.style.height;
+    el.style.width = `${dims.width}px`;
+    el.style.height = `${dims.height}px`;
+    // Give ResponsiveContainer's resize observer (and recharts' own re-render) time to catch up
+    // to the new size before we read the SVG — otherwise we'd capture the old layout.
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise((resolve) => setTimeout(resolve, 60));
   }
 
-  let dataUrl;
   try {
-    const base64 = btoa(unescape(encodeURIComponent(svgStr)));
-    dataUrl = `data:image/svg+xml;base64,${base64}`;
-  } catch (err) {
-    onError(`Couldn't render "${name}" as PNG. Try SVG export instead.`);
-    return;
-  }
+    const originalSvg = el.querySelector('svg');
+    if (!originalSvg) {
+      onError(`Couldn't find a chart to export for "${name}".`);
+      return;
+    }
+    const fallbackWidth = resizing ? dims.width : (el.clientWidth || 600);
+    const fallbackHeight = resizing ? dims.height : (el.clientHeight || 300);
+    const { svgEl, width, height } = buildExportSvg(originalSvg, legendItems, fallbackWidth, fallbackHeight);
+    const serializer = new XMLSerializer();
+    const svgStr = serializer.serializeToString(svgEl);
 
-  const img = new Image();
-  img.onload = () => {
-    const scale = 2;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(width * scale));
-    canvas.height = Math.max(1, Math.round(height * scale));
-    const ctx = canvas.getContext('2d');
-    ctx.scale(scale, scale);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, width, height);
-    ctx.drawImage(img, 0, 0, width, height);
-    canvas.toBlob((blob) => {
-      if (blob) {
-        saveFile(blob, `${name}.png`, 'PNG image', 'image/png', ['.png']);
-        return;
-      }
-      try {
-        const pngDataUrl = canvas.toDataURL('image/png');
-        const byteStr = atob(pngDataUrl.split(',')[1]);
-        const arr = new Uint8Array(byteStr.length);
-        for (let i = 0; i < byteStr.length; i++) arr[i] = byteStr.charCodeAt(i);
-        saveFile(new Blob([arr], { type: 'image/png' }), `${name}.png`, 'PNG image', 'image/png', ['.png']);
-      } catch (err) {
+    if (format === 'svg') {
+      const svgBlob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+      saveFile(svgBlob, `${name}.svg`, 'SVG image', 'image/svg+xml', ['.svg']);
+      return;
+    }
+
+    let dataUrl;
+    try {
+      const base64 = btoa(unescape(encodeURIComponent(svgStr)));
+      dataUrl = `data:image/svg+xml;base64,${base64}`;
+    } catch (err) {
+      onError(`Couldn't render "${name}" as PNG. Try SVG export instead.`);
+      return;
+    }
+
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = 2;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        const ctx = canvas.getContext('2d');
+        ctx.scale(scale, scale);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob((blob) => {
+          if (blob) {
+            saveFile(blob, `${name}.png`, 'PNG image', 'image/png', ['.png']);
+            resolve();
+            return;
+          }
+          try {
+            const pngDataUrl = canvas.toDataURL('image/png');
+            const byteStr = atob(pngDataUrl.split(',')[1]);
+            const arr = new Uint8Array(byteStr.length);
+            for (let i = 0; i < byteStr.length; i++) arr[i] = byteStr.charCodeAt(i);
+            saveFile(new Blob([arr], { type: 'image/png' }), `${name}.png`, 'PNG image', 'image/png', ['.png']);
+          } catch (err) {
+            onError(`Couldn't render "${name}" as PNG. Try SVG export instead.`);
+          }
+          resolve();
+        }, 'image/png');
+      };
+      img.onerror = () => {
         onError(`Couldn't render "${name}" as PNG. Try SVG export instead.`);
-      }
-    }, 'image/png');
-  };
-  img.onerror = () => {
-    onError(`Couldn't render "${name}" as PNG. Try SVG export instead.`);
-  };
-  img.src = dataUrl;
+        resolve();
+      };
+      img.src = dataUrl;
+    });
+  } finally {
+    if (resizing) {
+      el.style.width = restoreWidth;
+      el.style.height = restoreHeight;
+    }
+  }
 }
 
 // ---------- CSV export helpers ----------
@@ -462,6 +583,8 @@ function exportCsvGrid(header, xGrid, seriesList, filename) {
 // ---------- UI ----------
 
 export default function THzAnalyzer() {
+  const [activeTab, setActiveTab] = useState('tds-fft'); // 'tds-fft' | 'power-dep'
+
   const [datasets, setDatasets] = useState([]);
   const [errors, setErrors] = useState([]);
   const fileInputRef = useRef(null);
@@ -485,6 +608,27 @@ export default function THzAnalyzer() {
   const [sortDir, setSortDir] = useState('desc'); // 'asc' | 'desc'
   const sessionInputRef = useRef(null);
 
+  // --- export resolution/aspect-ratio dialog ---
+  const [exportDialog, setExportDialog] = useState(null); // { wrapRef, name, legendItems, format } | null
+  const [exportW, setExportW] = useState(1200);
+  const [exportH, setExportH] = useState(700);
+
+  const openExportDialog = (wrapRef, name, legendItems, format) => {
+    const el = wrapRef.current;
+    setExportW(el && el.clientWidth ? Math.round(el.clientWidth) : 1200);
+    setExportH(el && el.clientHeight ? Math.round(el.clientHeight) : 700);
+    setExportDialog({ wrapRef, name, legendItems, format });
+  };
+
+  const confirmExport = () => {
+    if (!exportDialog) return;
+    const { wrapRef, name, legendItems, format } = exportDialog;
+    const w = Math.max(200, Math.min(4000, Math.round(Number(exportW)) || 1200));
+    const h = Math.max(200, Math.min(4000, Math.round(Number(exportH)) || 700));
+    exportChart(wrapRef, name, legendItems, format, addError, { width: w, height: h });
+    setExportDialog(null);
+  };
+
   // --- zoom / pan state (per chart) ---
   const [timeDomain, setTimeDomain] = useState(null); // null = auto (full range)
   const [freqDomain, setFreqDomain] = useState(null);
@@ -499,6 +643,103 @@ export default function THzAnalyzer() {
   const timeYScaleRef = useRef(null);
   const freqYScaleRef = useRef(null);
   const emptySel = { x1: null, x2: null, y1: null, y2: null };
+
+  // --- Tab 2: power dependence ---
+  const makeEmptyRows = (n) => Array.from({ length: n }, () => ({ power: '', min: '', max: '' }));
+  const makePowerDataset = (idx, rowCount) => ({
+    id: `pd_${Date.now()}_${idx}_${Math.random().toString(36).slice(2)}`,
+    name: `Dataset ${idx + 1}`,
+    color: COLORS[idx % COLORS.length],
+    marker: MARKER_TYPES[idx % MARKER_TYPES.length],
+    rows: makeEmptyRows(rowCount),
+  });
+
+  const [numPowers, setNumPowers] = useState(5);
+  const [numPowerDatasets, setNumPowerDatasets] = useState(1);
+  const [powerDatasets, setPowerDatasets] = useState(() => [makePowerDataset(0, 5)]);
+  const powerChartWrapRef = useRef(null);
+
+  const handleNumPowersChange = (n) => {
+    const count = Math.max(1, Math.min(200, Math.round(Number(n)) || 1));
+    setNumPowers(count);
+    setPowerDatasets((prev) => prev.map((ds) => {
+      const rows = ds.rows.slice(0, count);
+      while (rows.length < count) rows.push({ power: '', min: '', max: '' });
+      return { ...ds, rows };
+    }));
+  };
+
+  const handleNumPowerDatasetsChange = (n) => {
+    const count = Math.max(1, Math.min(12, Math.round(Number(n)) || 1));
+    setNumPowerDatasets(count);
+    setPowerDatasets((prev) => {
+      const arr = prev.slice(0, count);
+      while (arr.length < count) arr.push(makePowerDataset(arr.length, numPowers));
+      return arr;
+    });
+  };
+
+  const updatePowerDataset = (id, patch) => setPowerDatasets((prev) => prev.map((ds) => (ds.id === id ? { ...ds, ...patch } : ds)));
+  const updatePowerRow = (dsId, rowIndex, field, value) => {
+    setPowerDatasets((prev) => prev.map((ds) => {
+      if (ds.id !== dsId) return ds;
+      const rows = ds.rows.map((r, i) => (i === rowIndex ? { ...r, [field]: value } : r));
+      return { ...ds, rows };
+    }));
+  };
+
+  const clearPowerDatasetValues = (dsId) => {
+    setPowerDatasets((prev) => prev.map((ds) => (ds.id === dsId ? { ...ds, rows: makeEmptyRows(ds.rows.length) } : ds)));
+  };
+
+  const POWER_TABLE_FIELDS = ['power', 'min', 'max'];
+
+  // Lets a copied block of spreadsheet cells (multiple rows and/or columns, tab/newline-separated)
+  // be pasted starting at one cell and fill outward across rows/columns automatically.
+  const handlePowerTablePaste = (e, dsId, rowIndex, field) => {
+    const text = e.clipboardData ? e.clipboardData.getData('text') : '';
+    if (!text.includes('\n') && !text.includes('\t')) return; // single value — let normal paste happen
+    e.preventDefault();
+    const lines = text.replace(/\r/g, '').split('\n');
+    while (lines.length && lines[lines.length - 1] === '') lines.pop();
+    const grid = lines.map((line) => line.split('\t'));
+    const startFieldIdx = POWER_TABLE_FIELDS.indexOf(field);
+
+    setPowerDatasets((prev) => prev.map((ds) => {
+      if (ds.id !== dsId) return ds;
+      const rows = ds.rows.map((r) => ({ ...r }));
+      grid.forEach((lineCells, rOffset) => {
+        const targetRow = rowIndex + rOffset;
+        if (targetRow >= rows.length) return;
+        lineCells.forEach((cellVal, cOffset) => {
+          const fIdx = startFieldIdx + cOffset;
+          if (fIdx >= POWER_TABLE_FIELDS.length) return;
+          rows[targetRow][POWER_TABLE_FIELDS[fIdx]] = cellVal.trim();
+        });
+      });
+      return { ...ds, rows };
+    }));
+  };
+
+  const exportPowerDependenceCsv = () => {
+    if (!powerDatasets.length) { addError('No datasets to export.'); return; }
+    const header = ['Power (mW)', ...powerDatasets.map((d) => `${d.name} (peak-to-peak)`)];
+    const rows = [];
+    for (let i = 0; i < numPowers; i++) {
+      const refRow = powerDatasets[0] && powerDatasets[0].rows[i];
+      const power = refRow ? refRow.power : '';
+      const row = [power];
+      powerDatasets.forEach((ds) => {
+        const r = ds.rows[i];
+        const min = r ? Number(r.min) : NaN;
+        const max = r ? Number(r.max) : NaN;
+        row.push(Number.isFinite(min) && Number.isFinite(max) ? roundSig(max - min) : '');
+      });
+      rows.push(row);
+    }
+    const csv = Papa.unparse([header, ...rows]);
+    saveFile(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'thz_power_dependence.csv', 'CSV file', 'text/csv', ['.csv']);
+  };
 
   const timeFullDomain = useMemo(() => {
     let lo = Infinity, hi = -Infinity;
@@ -721,13 +962,18 @@ export default function THzAnalyzer() {
   const saveSession = () => {
     if (datasets.length === 0) { addError('No datasets loaded to save.'); return; }
     const session = {
-      version: 1,
+      version: 2,
       datasets: datasets.map((d) => ({
         name: d.name, color: d.color, visible: d.visible, width: d.width, time: d.time, amplitude: d.amplitude,
       })),
       settings: {
         windowType, zeroPadFactor, timeUnit, noiseRegion, noiseFraction, bandwidthMode, marginDB, displayMode, showWaterVapor,
         timeDomain, timeYDomain, freqDomain, freqYDomain,
+      },
+      snapshots,
+      powerDependence: {
+        numPowers, numPowerDatasets,
+        datasets: powerDatasets.map((ds) => ({ name: ds.name, color: ds.color, marker: ds.marker, rows: ds.rows })),
       },
     };
     const json = JSON.stringify(session);
@@ -767,6 +1013,23 @@ export default function THzAnalyzer() {
         setFreqYDomain(Array.isArray(s.freqYDomain) ? s.freqYDomain : null);
         setTimeSel(emptySel);
         setFreqSel(emptySel);
+
+        if (Array.isArray(session.snapshots)) setSnapshots(session.snapshots);
+
+        const pd = session.powerDependence;
+        if (pd && Array.isArray(pd.datasets) && pd.datasets.length) {
+          const rowCount = pd.numPowers || (pd.datasets[0].rows ? pd.datasets[0].rows.length : 5);
+          setNumPowers(rowCount);
+          setNumPowerDatasets(pd.numPowerDatasets || pd.datasets.length);
+          setPowerDatasets(pd.datasets.map((ds, i) => ({
+            id: `pd_${Date.now()}_${i}_${Math.random().toString(36).slice(2)}`,
+            name: ds.name || `Dataset ${i + 1}`,
+            color: ds.color || COLORS[i % COLORS.length],
+            marker: MARKER_TYPES.includes(ds.marker) ? ds.marker : MARKER_TYPES[i % MARKER_TYPES.length],
+            rows: Array.isArray(ds.rows) ? ds.rows : makeEmptyRows(rowCount),
+          })));
+          setPowerPlotted(false);
+        }
       } catch (err) {
         addError(`Couldn't load "${file.name}" — not a valid session file.`);
       }
@@ -877,6 +1140,48 @@ export default function THzAnalyzer() {
 
   const sortArrow = (key) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
 
+  const powerAxisTop = useMemo(() => {
+    let maxP = 0;
+    powerDatasets.forEach((ds) => ds.rows.forEach((r) => {
+      const p = Number(r.power);
+      if (Number.isFinite(p) && p > maxP) maxP = p;
+    }));
+    if (!(maxP > 0)) return 80;
+    return Math.ceil(maxP / 10) * 10 + 10;
+  }, [powerDatasets]);
+
+  const powerPlotData = useMemo(() => {
+    return powerDatasets.map((ds) => {
+      const points = ds.rows
+        .map((r) => ({ power: Number(r.power), min: Number(r.min), max: Number(r.max) }))
+        .filter((r) => Number.isFinite(r.power) && Number.isFinite(r.min) && Number.isFinite(r.max))
+        .map((r) => ({ x: r.power, y: r.max - r.min }));
+      const fit = fitSaturationCurve(points.map((p) => p.x), points.map((p) => p.y));
+      let fitLine = [];
+      if (fit) {
+        const steps = 60;
+        fitLine = Array.from({ length: steps + 1 }, (_, i) => {
+          const p = (powerAxisTop * i) / steps;
+          return { x: p, y: (fit.Amax * p) / (p + fit.Psat) };
+        });
+      }
+      return { id: ds.id, name: ds.name, color: ds.color, marker: ds.marker, points, fit, fitLine };
+    });
+  }, [powerDatasets, powerAxisTop]);
+
+  const powerXTicks = useMemo(() => {
+    const ticks = [];
+    for (let t = 0; t <= powerAxisTop; t += 5) ticks.push(t);
+    return ticks.length ? ticks : [0];
+  }, [powerAxisTop]);
+
+  const buildPowerLegendItems = () => (powerPlotData || []).map((pd) => ({
+    color: pd.color,
+    parts: pd.fit
+      ? [{ text: `${pd.name} (P` }, { text: 'sat', dy: 3, fontSize: 8 }, { text: ` = ${roundDisp(pd.fit.Psat)} mW)`, dy: -3 }]
+      : [{ text: `${pd.name} (fit unavailable)` }],
+  }));
+
   const percentileOf = (sortedVals, p) => {
     if (!sortedVals.length) return NaN;
     const idx = Math.min(sortedVals.length - 1, Math.max(0, Math.round(p * (sortedVals.length - 1))));
@@ -936,6 +1241,21 @@ export default function THzAnalyzer() {
         </div>
       </div>
 
+      <div className="flex gap-1 px-6 pt-3 border-b border-slate-400 bg-slate-50">
+        <button
+          onClick={() => setActiveTab('tds-fft')}
+          className={`text-sm px-4 py-2 rounded-t border border-b-0 -mb-px transition ${activeTab === 'tds-fft' ? 'bg-white border-slate-400 text-slate-900 font-medium' : 'border-transparent text-slate-600 hover:text-slate-900'}`}
+        >
+          TDS &amp; FFT
+        </button>
+        <button
+          onClick={() => setActiveTab('power-dep')}
+          className={`text-sm px-4 py-2 rounded-t border border-b-0 -mb-px transition ${activeTab === 'power-dep' ? 'bg-white border-slate-400 text-slate-900 font-medium' : 'border-transparent text-slate-600 hover:text-slate-900'}`}
+        >
+          Power Dependence
+        </button>
+      </div>
+
       {errors.length > 0 && (
         <div className="px-6 pt-4 space-y-2">
           {errors.map((msg, i) => (
@@ -947,6 +1267,7 @@ export default function THzAnalyzer() {
         </div>
       )}
 
+      {activeTab === 'tds-fft' && (
       <div className="flex flex-row gap-4 p-6 items-start">
         {/* Left: controls + metrics */}
         <div className="w-80 flex-shrink-0 space-y-4">
@@ -1297,13 +1618,13 @@ export default function THzAnalyzer() {
                 </button>
                 <span className="w-px bg-slate-300 mx-0.5" />
                 <button
-                  onClick={() => exportChart(timeChartWrapRef, 'thz_time_domain', legendItems, 'png', addError)}
+                  onClick={() => openExportDialog(timeChartWrapRef, 'thz_time_domain', legendItems, 'png')}
                   className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
                 >
                   <Download size={12} /> PNG
                 </button>
                 <button
-                  onClick={() => exportChart(timeChartWrapRef, 'thz_time_domain', legendItems, 'svg', addError)}
+                  onClick={() => openExportDialog(timeChartWrapRef, 'thz_time_domain', legendItems, 'svg')}
                   className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
                 >
                   <Download size={12} /> SVG
@@ -1313,7 +1634,7 @@ export default function THzAnalyzer() {
             <div className="h-96 select-none" ref={timeChartWrapRef} onMouseDown={(e) => e.preventDefault()} style={{ cursor: timeMode === 'pan' ? 'grab' : 'crosshair', userSelect: 'none', WebkitUserSelect: 'none', MozUserSelect: 'none' }}>
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart
-                  margin={{ top: 5, right: 15, bottom: 40, left: 0 }}
+                  margin={{ top: 24, right: 15, bottom: 40, left: 0 }}
                   onMouseDown={(e) => handleMouseDown(e, 'time')}
                   onMouseMove={(e) => handleMouseMove(e, 'time')}
                   onMouseUp={() => handleMouseUp('time')}
@@ -1335,8 +1656,11 @@ export default function THzAnalyzer() {
                   {timeMode === 'zoom' && timeSel.x1 != null && timeSel.x2 != null && (
                     <ReferenceArea x1={timeSel.x1} x2={timeSel.x2} y1={timeSel.y1} y2={timeSel.y2} strokeOpacity={0.4} stroke="#0d9488" fill="#0d9488" fillOpacity={0.15} />
                   )}
-                  {snapshots.map((s) => (
-                    <ReferenceLine key={s.id} x={s.time} stroke="#0f766e" strokeDasharray="2 2" strokeWidth={1} ifOverflow="extendDomain" />
+                  {snapshots.map((s, i) => (
+                    <ReferenceLine
+                      key={s.id} x={s.time} stroke="#0f766e" strokeDasharray="2 2" strokeWidth={1} ifOverflow="extendDomain"
+                      label={{ value: indexToLetters(i), position: 'top', fill: '#0f766e', fontSize: 12, fontWeight: 700 }}
+                    />
                   ))}
                 </LineChart>
               </ResponsiveContainer>
@@ -1363,6 +1687,7 @@ export default function THzAnalyzer() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-slate-600 border-b border-slate-400">
+                      <th className="text-left font-normal py-2 pr-4">Label</th>
                       <th className="text-right font-normal py-2 pr-4">Time ({timeUnit})</th>
                       {snapshotColumns.map((c) => (
                         <th key={c.id} className="text-right font-normal py-2 pr-4">
@@ -1376,8 +1701,9 @@ export default function THzAnalyzer() {
                     </tr>
                   </thead>
                   <tbody>
-                    {snapshots.map((s) => (
+                    {snapshots.map((s, i) => (
                       <tr key={s.id} className="border-b border-slate-300">
+                        <td className="text-left pr-4 font-mono font-semibold text-teal-800">{indexToLetters(i)}</td>
                         <td className="text-right pr-4 font-mono">{fmt(s.time, 4)}</td>
                         {snapshotColumns.map((c) => {
                           const en = s.entries.find((e) => e.id === c.id);
@@ -1427,13 +1753,13 @@ export default function THzAnalyzer() {
                 </button>
                 <span className="w-px bg-slate-300 mx-0.5" />
                 <button
-                  onClick={() => exportChart(freqChartWrapRef, 'thz_frequency_domain', legendItems, 'png', addError)}
+                  onClick={() => openExportDialog(freqChartWrapRef, 'thz_frequency_domain', legendItems, 'png')}
                   className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
                 >
                   <Download size={12} /> PNG
                 </button>
                 <button
-                  onClick={() => exportChart(freqChartWrapRef, 'thz_frequency_domain', legendItems, 'svg', addError)}
+                  onClick={() => openExportDialog(freqChartWrapRef, 'thz_frequency_domain', legendItems, 'svg')}
                   className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
                 >
                   <Download size={12} /> SVG
@@ -1443,7 +1769,7 @@ export default function THzAnalyzer() {
             <div className="h-96 select-none" ref={freqChartWrapRef} onMouseDown={(e) => e.preventDefault()} style={{ cursor: freqMode === 'pan' ? 'grab' : 'crosshair', userSelect: 'none', WebkitUserSelect: 'none', MozUserSelect: 'none' }}>
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart
-                  margin={{ top: 5, right: 15, bottom: 40, left: 0 }}
+                  margin={{ top: 24, right: 15, bottom: 40, left: 0 }}
                   onMouseDown={(e) => handleMouseDown(e, 'freq')}
                   onMouseMove={(e) => handleMouseMove(e, 'freq')}
                   onMouseUp={() => handleMouseUp('freq')}
@@ -1509,6 +1835,245 @@ export default function THzAnalyzer() {
           </div>
         </div>
       </div>
+      )}
+
+      {activeTab === 'power-dep' && (
+      <div className="flex flex-row gap-4 p-6 items-start">
+        {/* Left: dataset settings */}
+        <div className="w-80 flex-shrink-0 space-y-4">
+          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-3">
+            <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Dataset settings</p>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <label className="space-y-1">
+                <span className="text-slate-900 block">Number of powers</span>
+                <input
+                  type="number" min={1} max={200} value={numPowers}
+                  onChange={(e) => handleNumPowersChange(e.target.value)}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-slate-900 block">Number of datasets</span>
+                <input
+                  type="number" min={1} max={12} value={numPowerDatasets}
+                  onChange={(e) => handleNumPowerDatasetsChange(e.target.value)}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+            </div>
+
+            <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1">
+              {powerDatasets.map((ds) => (
+                <div key={ds.id} className="rounded bg-white border border-slate-400 px-2 py-1.5 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={/^#[0-9a-fA-F]{6}$/.test(ds.color) ? ds.color : '#000000'}
+                      onChange={(e) => updatePowerDataset(ds.id, { color: e.target.value })}
+                      className="w-5 h-5 rounded border border-slate-400 p-0 bg-transparent cursor-pointer flex-shrink-0"
+                      title="Pick color"
+                    />
+                    <input
+                      value={ds.name}
+                      onChange={(e) => updatePowerDataset(ds.id, { name: e.target.value })}
+                      className="flex-1 min-w-0 bg-white border border-slate-300 rounded px-1.5 py-0.5 text-xs text-slate-800"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 pl-7 text-xs text-slate-600">
+                    <span>Hex</span>
+                    <input
+                      value={ds.color}
+                      onChange={(e) => updatePowerDataset(ds.id, { color: e.target.value })}
+                      onBlur={(e) => { if (!/^#[0-9a-fA-F]{6}$/.test(e.target.value.trim())) updatePowerDataset(ds.id, { color: /^#[0-9a-fA-F]{6}$/.test(ds.color) ? ds.color : '#0d9488' }); }}
+                      spellCheck={false}
+                      className="w-20 bg-white border border-slate-400 rounded px-1 py-0.5 text-slate-800 font-mono uppercase"
+                    />
+                    <span>Marker</span>
+                    <select
+                      value={ds.marker}
+                      onChange={(e) => updatePowerDataset(ds.id, { marker: e.target.value })}
+                      className="flex-1 bg-white border border-slate-400 rounded px-1 py-0.5 text-slate-800 capitalize"
+                    >
+                      {MARKER_TYPES.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Right: data tables + scatter plot */}
+        <div className="flex-1 min-w-0 space-y-4">
+          <div className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm">
+            <p className="text-xs uppercase tracking-wide text-slate-600 font-mono mb-2">Snapshot reference</p>
+            {snapshots.length === 0 ? (
+              <p className="text-xs text-slate-600">No snapshots yet. Use Snapshot mode on the TDS &amp; FFT tab's time-domain plot to capture values here for copying.</p>
+            ) : (
+              <div className="overflow-x-auto max-h-64 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-slate-600 border-b border-slate-400">
+                      <th className="text-left font-normal py-1 pr-2">Label</th>
+                      <th className="text-right font-normal py-1 pr-2">Time ({timeUnit})</th>
+                      {snapshotColumns.map((c) => (
+                        <th key={c.id} className="text-right font-normal py-1 pr-2">
+                          <span className="inline-flex items-center gap-1">
+                            <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: c.color }} />
+                            {c.name}
+                          </span>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapshots.map((s, i) => (
+                      <tr key={s.id} className="border-b border-slate-300">
+                        <td className="text-left pr-2 font-mono font-semibold text-teal-800">{indexToLetters(i)}</td>
+                        <td className="text-right pr-2 font-mono">{fmt(s.time, 4)}</td>
+                        {snapshotColumns.map((c) => {
+                          const en = s.entries.find((e) => e.id === c.id);
+                          return <td key={c.id} className="text-right pr-2 font-mono">{en && en.value != null ? fmt(en.value, 6) : '—'}</td>;
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between">
+            <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Data tables</p>
+            <button
+              onClick={exportPowerDependenceCsv}
+              className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition bg-white"
+            >
+              <Download size={12} /> Export CSV
+            </button>
+          </div>
+
+          {powerDatasets.map((ds) => (
+            <div key={ds.id} className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm overflow-x-auto">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-3 h-3 rounded-full inline-block flex-shrink-0" style={{ backgroundColor: ds.color }} />
+                  <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">{ds.name}</p>
+                  <span className="text-[10px] text-slate-500 capitalize">({ds.marker} marker)</span>
+                </div>
+                <button
+                  onClick={() => clearPowerDatasetValues(ds.id)}
+                  className="flex items-center gap-1 text-xs text-slate-600 hover:text-red-700 border border-slate-400 rounded px-2 py-1 hover:border-red-400 hover:bg-red-50 transition"
+                >
+                  <Trash2 size={12} /> Clear
+                </button>
+              </div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-slate-600 border-b border-slate-400">
+                    <th className="text-right font-normal py-1.5 pr-4">Power (mW)</th>
+                    <th className="text-right font-normal py-1.5 pr-4">Min amplitude</th>
+                    <th className="text-right font-normal py-1.5 pr-4">Max amplitude</th>
+                    <th className="text-right font-normal py-1.5">Peak-to-peak</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ds.rows.map((row, i) => {
+                    const min = Number(row.min), max = Number(row.max);
+                    const p2p = Number.isFinite(min) && Number.isFinite(max) ? max - min : null;
+                    return (
+                      <tr key={i} className="border-b border-slate-200">
+                        <td className="text-right pr-4 py-1">
+                          <input
+                            value={row.power}
+                            onChange={(e) => updatePowerRow(ds.id, i, 'power', e.target.value)}
+                            onPaste={(e) => handlePowerTablePaste(e, ds.id, i, 'power')}
+                            className="w-full text-right bg-white border border-slate-300 rounded px-1.5 py-0.5 font-mono text-xs"
+                            placeholder="0.0"
+                          />
+                        </td>
+                        <td className="text-right pr-4 py-1">
+                          <input
+                            value={row.min}
+                            onChange={(e) => updatePowerRow(ds.id, i, 'min', e.target.value)}
+                            onPaste={(e) => handlePowerTablePaste(e, ds.id, i, 'min')}
+                            className="w-full text-right bg-white border border-slate-300 rounded px-1.5 py-0.5 font-mono text-xs"
+                            placeholder="insert value"
+                          />
+                        </td>
+                        <td className="text-right pr-4 py-1">
+                          <input
+                            value={row.max}
+                            onChange={(e) => updatePowerRow(ds.id, i, 'max', e.target.value)}
+                            onPaste={(e) => handlePowerTablePaste(e, ds.id, i, 'max')}
+                            className="w-full text-right bg-white border border-slate-300 rounded px-1.5 py-0.5 font-mono text-xs"
+                            placeholder="insert value"
+                          />
+                        </td>
+                        <td className="text-right font-mono text-xs text-slate-700">{p2p != null ? p2p.toPrecision(6) : '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
+
+          <div className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Power dependence plot</p>
+              <div className="flex gap-1.5">
+                <button
+                  onClick={() => openExportDialog(powerChartWrapRef, 'thz_power_dependence', buildPowerLegendItems(), 'png')}
+                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                >
+                  <Download size={12} /> PNG
+                </button>
+                <button
+                  onClick={() => openExportDialog(powerChartWrapRef, 'thz_power_dependence', buildPowerLegendItems(), 'svg')}
+                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                >
+                  <Download size={12} /> SVG
+                </button>
+              </div>
+            </div>
+
+            <>
+                <div className="h-96" ref={powerChartWrapRef}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart margin={{ top: 15, right: 25, bottom: 40, left: 20 }}>
+                      <CartesianGrid stroke="#cbd5e1" strokeDasharray="3 3" />
+                      <XAxis dataKey="x" type="number" domain={[0, powerXTicks.length ? powerXTicks[powerXTicks.length - 1] : 'auto']} ticks={powerXTicks} tickFormatter={(v) => (Math.round(v) % 10 === 0 ? v : '')} stroke="#334155" tick={{ fontSize: 11 }}
+                        label={{ value: 'Power (mW)', position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
+                      <YAxis dataKey="y" type="number" stroke="#334155" tick={{ fontSize: 11 }}
+                        label={{ value: 'Peak-to-peak amplitude (a.u.)', angle: -90, position: 'center', dx: -35, fill: '#334155', fontSize: 11 }} />
+                      <Tooltip contentStyle={{ background: '#ffffff', border: '1px solid #94a3b8', fontSize: 12 }} labelStyle={{ color: '#1e293b' }} />
+                      <Customized component={ChartBorder} />
+                      {powerPlotData && powerPlotData.map((pd) => (
+                        <Scatter key={`${pd.id}-pts`} data={pd.points} fill={pd.color} shape={pd.marker} name={pd.name} line={false} isAnimationActive={false} />
+                      ))}
+                      {powerPlotData && powerPlotData.filter((pd) => pd.fit).map((pd) => (
+                        <Line key={`${pd.id}-fit`} data={pd.fitLine} dataKey="y" stroke={pd.color} strokeDasharray="5 4" strokeWidth={1.5} dot={false} isAnimationActive={false} legendType="none" />
+                      ))}
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="flex flex-wrap gap-x-5 gap-y-2 justify-center pt-3 text-xs text-slate-800">
+                  {powerPlotData && powerPlotData.map((pd) => (
+                    <span key={pd.id} className="inline-flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: pd.color }} />
+                      {pd.name}
+                      <span className="text-slate-500">
+                        {pd.fit ? <>(P<sub>sat</sub> = {roundDisp(pd.fit.Psat)} mW)</> : '(fit unavailable)'}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              </>
+          </div>
+        </div>
+      </div>
+      )}
 
       <div className="border-t border-slate-400 px-6 py-3">
         <p className="text-[11px] text-slate-500 font-mono">
@@ -1524,6 +2089,41 @@ export default function THzAnalyzer() {
           {' '}· 2026
         </p>
       </div>
+
+      {exportDialog && (
+        <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center z-50 p-4" onClick={() => setExportDialog(null)}>
+          <div className="bg-white rounded-lg border border-slate-400 shadow-lg p-5 w-80" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm font-semibold text-slate-900 mb-3">Export {exportDialog.format.toUpperCase()}</p>
+            <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+              <label className="space-y-1">
+                <span className="text-slate-900 block">Width (px)</span>
+                <input
+                  type="number" min={200} max={4000} value={exportW}
+                  onChange={(e) => setExportW(e.target.value)}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-slate-900 block">Height (px)</span>
+                <input
+                  type="number" min={200} max={4000} value={exportH}
+                  onChange={(e) => setExportH(e.target.value)}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+            </div>
+            <div className="flex flex-wrap gap-1.5 mb-4">
+              <button onClick={() => { setExportW(1200); setExportH(700); }} className="text-xs border border-slate-400 rounded px-2 py-1 text-slate-700 hover:bg-slate-100">Wide 1200×700</button>
+              <button onClick={() => { setExportW(1000); setExportH(1000); }} className="text-xs border border-slate-400 rounded px-2 py-1 text-slate-700 hover:bg-slate-100">Square 1000×1000</button>
+              <button onClick={() => { setExportW(1600); setExportH(900); }} className="text-xs border border-slate-400 rounded px-2 py-1 text-slate-700 hover:bg-slate-100">Wide 1600×900</button>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setExportDialog(null)} className="text-xs px-3 py-1.5 rounded border border-slate-400 text-slate-700 hover:bg-slate-100">Cancel</button>
+              <button onClick={confirmExport} className="text-xs px-3 py-1.5 rounded bg-teal-600 text-white hover:bg-teal-700">Export</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
