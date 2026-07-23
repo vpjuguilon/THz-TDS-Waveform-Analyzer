@@ -1028,7 +1028,6 @@ export default function THzAnalyzer() {
             marker: MARKER_TYPES.includes(ds.marker) ? ds.marker : MARKER_TYPES[i % MARKER_TYPES.length],
             rows: Array.isArray(ds.rows) ? ds.rows : makeEmptyRows(rowCount),
           })));
-          setPowerPlotted(false);
         }
       } catch (err) {
         addError(`Couldn't load "${file.name}" — not a valid session file.`);
