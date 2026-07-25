@@ -607,6 +607,8 @@ export default function THzAnalyzer() {
   const [sortKey, setSortKey] = useState(null); // 'peakToPeak' | 'peakFreq' | 'bwWidth' | 'noiseFloorDB' | 'snrDB'
   const [sortDir, setSortDir] = useState('desc'); // 'asc' | 'desc'
   const sessionInputRef = useRef(null);
+  const [sessionName, setSessionName] = useState('');
+  const [sessionStatus, setSessionStatus] = useState(null); // 'saved' | 'loaded' | null
 
   // --- export resolution/aspect-ratio dialog ---
   const [exportDialog, setExportDialog] = useState(null); // { wrapRef, name, legendItems, format } | null
@@ -987,8 +989,10 @@ export default function THzAnalyzer() {
 
   const saveSession = () => {
     if (datasets.length === 0) { addError('No datasets loaded to save.'); return; }
+    const name = sessionName.trim() || 'thz_session';
     const session = {
       version: 2,
+      name,
       datasets: datasets.map((d) => ({
         name: d.name, color: d.color, visible: d.visible, width: d.width, time: d.time, amplitude: d.amplitude,
       })),
@@ -1004,7 +1008,9 @@ export default function THzAnalyzer() {
       },
     };
     const json = JSON.stringify(session);
-    saveFile(new Blob([json], { type: 'application/json' }), 'thz_session.json', 'JSON session file', 'application/json', ['.json']);
+    saveFile(new Blob([json], { type: 'application/json' }), `${name}.json`, 'JSON session file', 'application/json', ['.json']);
+    setSessionName(name);
+    setSessionStatus('saved');
   };
 
   const loadSession = (file) => {
@@ -1060,6 +1066,11 @@ export default function THzAnalyzer() {
           if (typeof pd.laserPulseDuration === 'number') setLaserPulseDuration(pd.laserPulseDuration);
           if (typeof pd.laserSpotDiameter === 'number') setLaserSpotDiameter(pd.laserSpotDiameter);
         }
+
+        const derivedName = (typeof session.name === 'string' && session.name.trim())
+          || file.name.replace(/\.json$/i, '');
+        setSessionName(derivedName);
+        setSessionStatus('loaded');
       } catch (err) {
         addError(`Couldn't load "${file.name}" — not a valid session file.`);
       }
@@ -1592,6 +1603,15 @@ export default function THzAnalyzer() {
 
           <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-2">
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Session</p>
+            <label className="block space-y-1">
+              <span className="text-xs text-slate-900">Session name</span>
+              <input
+                value={sessionName}
+                onChange={(e) => { setSessionName(e.target.value); setSessionStatus(null); }}
+                placeholder="thz_session"
+                className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-xs text-slate-800"
+              />
+            </label>
             <div className="flex gap-2">
               <button
                 onClick={saveSession}
@@ -1606,6 +1626,11 @@ export default function THzAnalyzer() {
                 <Upload size={12} /> Load
               </button>
             </div>
+            {sessionStatus && sessionName && (
+              <p className="text-xs text-teal-800">
+                {sessionStatus === 'saved' ? 'Saved as ' : 'Loaded '}<span className="font-semibold">{sessionName}</span>
+              </p>
+            )}
             <input
               ref={sessionInputRef} type="file" accept=".json" className="hidden"
               onChange={(e) => { if (e.target.files[0]) loadSession(e.target.files[0]); e.target.value = null; }}
