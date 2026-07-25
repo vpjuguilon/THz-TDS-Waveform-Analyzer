@@ -659,6 +659,19 @@ export default function THzAnalyzer() {
   const [powerDatasets, setPowerDatasets] = useState(() => [makePowerDataset(0, 5)]);
   const powerChartWrapRef = useRef(null);
 
+  const [powerXUnit, setPowerXUnit] = useState('mW'); // 'mW' | 'fluence'
+  const [laserRepRate, setLaserRepRate] = useState(80); // MHz
+  const [laserPulseDuration, setLaserPulseDuration] = useState(100); // fs (not used in fluence itself — reserved for a future intensity mode)
+  const [laserSpotDiameter, setLaserSpotDiameter] = useState(2); // um
+
+  // Fluence [mJ/cm^2] = 400 * P[mW] / (pi * f_rep[MHz] * d[um]^2)
+  const convertPowerX = (mw) => {
+    if (powerXUnit !== 'fluence') return mw;
+    const rep = Number(laserRepRate), d = Number(laserSpotDiameter);
+    if (!Number.isFinite(mw) || !Number.isFinite(rep) || !Number.isFinite(d) || rep <= 0 || d <= 0) return NaN;
+    return (400 * mw) / (Math.PI * rep * d * d);
+  };
+
   const handleNumPowersChange = (n) => {
     const count = Math.max(1, Math.min(200, Math.round(Number(n)) || 1));
     setNumPowers(count);
@@ -723,12 +736,21 @@ export default function THzAnalyzer() {
 
   const exportPowerDependenceCsv = () => {
     if (!powerDatasets.length) { addError('No datasets to export.'); return; }
-    const header = ['Power (mW)', ...powerDatasets.map((d) => `${d.name} (peak-to-peak)`)];
+    const rep = Number(laserRepRate), dia = Number(laserSpotDiameter);
+    const toFluence = (mw) => {
+      if (!Number.isFinite(mw) || !Number.isFinite(rep) || !Number.isFinite(dia) || rep <= 0 || dia <= 0) return NaN;
+      return (400 * mw) / (Math.PI * rep * dia * dia);
+    };
+    const header = ['Power (mW)', 'Fluence (mJ/cm2)', ...powerDatasets.map((d) => `${d.name} (peak-to-peak)`)];
     const rows = [];
     for (let i = 0; i < numPowers; i++) {
       const refRow = powerDatasets[0] && powerDatasets[0].rows[i];
-      const power = refRow ? refRow.power : '';
-      const row = [power];
+      const mw = refRow ? Number(refRow.power) : NaN;
+      const fl = toFluence(mw);
+      const row = [
+        Number.isFinite(mw) ? roundSig(mw) : (refRow ? refRow.power : ''),
+        Number.isFinite(fl) ? roundSig(fl) : '',
+      ];
       powerDatasets.forEach((ds) => {
         const r = ds.rows[i];
         const min = r ? Number(r.min) : NaN;
@@ -860,6 +882,10 @@ export default function THzAnalyzer() {
 
   const handleFiles = useCallback((fileList) => {
     Array.from(fileList).forEach((file) => {
+      if (/\.json$/i.test(file.name)) {
+        addError(`"${file.name}" looks like a session file — use the "Load" button under Session instead of Upload.`);
+        return;
+      }
       const reader = new FileReader();
       reader.onload = (e) => {
         const { time, amplitude } = parseFileText(String(e.target.result));
@@ -974,6 +1000,7 @@ export default function THzAnalyzer() {
       powerDependence: {
         numPowers, numPowerDatasets,
         datasets: powerDatasets.map((ds) => ({ name: ds.name, color: ds.color, marker: ds.marker, rows: ds.rows })),
+        powerXUnit, laserRepRate, laserPulseDuration, laserSpotDiameter,
       },
     };
     const json = JSON.stringify(session);
@@ -1028,6 +1055,10 @@ export default function THzAnalyzer() {
             marker: MARKER_TYPES.includes(ds.marker) ? ds.marker : MARKER_TYPES[i % MARKER_TYPES.length],
             rows: Array.isArray(ds.rows) ? ds.rows : makeEmptyRows(rowCount),
           })));
+          if (pd.powerXUnit === 'fluence' || pd.powerXUnit === 'mW') setPowerXUnit(pd.powerXUnit);
+          if (typeof pd.laserRepRate === 'number') setLaserRepRate(pd.laserRepRate);
+          if (typeof pd.laserPulseDuration === 'number') setLaserPulseDuration(pd.laserPulseDuration);
+          if (typeof pd.laserSpotDiameter === 'number') setLaserSpotDiameter(pd.laserSpotDiameter);
         }
       } catch (err) {
         addError(`Couldn't load "${file.name}" — not a valid session file.`);
@@ -1140,21 +1171,22 @@ export default function THzAnalyzer() {
   const sortArrow = (key) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
 
   const powerAxisTop = useMemo(() => {
-    let maxP = 0;
+    let maxX = 0;
     powerDatasets.forEach((ds) => ds.rows.forEach((r) => {
-      const p = Number(r.power);
-      if (Number.isFinite(p) && p > maxP) maxP = p;
+      const x = convertPowerX(Number(r.power));
+      if (Number.isFinite(x) && x > maxX) maxX = x;
     }));
-    if (!(maxP > 0)) return 80;
-    return Math.ceil(maxP / 10) * 10 + 10;
-  }, [powerDatasets]);
+    if (!(maxX > 0)) return powerXUnit === 'fluence' ? 10 : 80;
+    return maxX * 1.15;
+  }, [powerDatasets, powerXUnit, laserRepRate, laserSpotDiameter]);
 
   const powerPlotData = useMemo(() => {
     return powerDatasets.map((ds) => {
       const points = ds.rows
         .map((r) => ({ power: Number(r.power), min: Number(r.min), max: Number(r.max) }))
         .filter((r) => Number.isFinite(r.power) && Number.isFinite(r.min) && Number.isFinite(r.max))
-        .map((r) => ({ x: r.power, y: r.max - r.min }));
+        .map((r) => ({ x: convertPowerX(r.power), y: r.max - r.min }))
+        .filter((p) => Number.isFinite(p.x));
       const fit = fitSaturationCurve(points.map((p) => p.x), points.map((p) => p.y));
       let fitLine = [];
       if (fit) {
@@ -1166,20 +1198,20 @@ export default function THzAnalyzer() {
       }
       return { id: ds.id, name: ds.name, color: ds.color, marker: ds.marker, points, fit, fitLine };
     });
-  }, [powerDatasets, powerAxisTop]);
+  }, [powerDatasets, powerAxisTop, powerXUnit, laserRepRate, laserSpotDiameter]);
 
-  const powerXTicks = useMemo(() => {
-    const ticks = [];
-    for (let t = 0; t <= powerAxisTop; t += 5) ticks.push(t);
-    return ticks.length ? ticks : [0];
-  }, [powerAxisTop]);
+  const powerXTicks = useMemo(() => niceTicks(0, powerAxisTop), [powerAxisTop]);
 
-  const buildPowerLegendItems = () => (powerPlotData || []).map((pd) => ({
-    color: pd.color,
-    parts: pd.fit
-      ? [{ text: `${pd.name} (P` }, { text: 'sat', dy: 3, fontSize: 8 }, { text: ` = ${roundDisp(pd.fit.Psat)} mW)`, dy: -3 }]
-      : [{ text: `${pd.name} (fit unavailable)` }],
-  }));
+  const buildPowerLegendItems = () => (powerPlotData || []).map((pd) => {
+    const symbol = powerXUnit === 'fluence' ? 'F' : 'P';
+    const unit = powerXUnit === 'fluence' ? 'mJ/cm2' : 'mW';
+    return {
+      color: pd.color,
+      parts: pd.fit
+        ? [{ text: `${pd.name} (${symbol}` }, { text: 'sat', dy: 3, fontSize: 8 }, { text: ` = ${roundDisp(pd.fit.Psat)} ${unit})`, dy: -3 }]
+        : [{ text: `${pd.name} (fit unavailable)` }],
+    };
+  });
 
   const percentileOf = (sortedVals, p) => {
     if (!sortedVals.length) return NaN;
@@ -1841,6 +1873,47 @@ export default function THzAnalyzer() {
         {/* Left: dataset settings */}
         <div className="w-80 flex-shrink-0 space-y-4">
           <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-3">
+            <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">X-axis units</p>
+            <div className="flex gap-4 text-xs">
+              <label className="flex items-center gap-1.5 text-slate-900">
+                <input type="radio" name="powerXUnit" checked={powerXUnit === 'mW'} onChange={() => setPowerXUnit('mW')} className="accent-teal-600" />
+                Power (mW)
+              </label>
+              <label className="flex items-center gap-1.5 text-slate-900">
+                <input type="radio" name="powerXUnit" checked={powerXUnit === 'fluence'} onChange={() => setPowerXUnit('fluence')} className="accent-teal-600" />
+                Fluence (mJ/cm²)
+              </label>
+            </div>
+            <p className="text-xs text-slate-600">Laser specs (used for the fluence conversion):</p>
+            <div className="grid grid-cols-1 gap-2 text-xs">
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-slate-900">Repetition rate (MHz)</span>
+                <input
+                  type="number" min={0} step="any" value={laserRepRate}
+                  onChange={(e) => setLaserRepRate(e.target.value)}
+                  className="w-20 bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-slate-900">Pulse duration (fs)</span>
+                <input
+                  type="number" min={0} step="any" value={laserPulseDuration}
+                  onChange={(e) => setLaserPulseDuration(e.target.value)}
+                  className="w-20 bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-slate-900">Spot diameter (µm)</span>
+                <input
+                  type="number" min={0} step="any" value={laserSpotDiameter}
+                  onChange={(e) => setLaserSpotDiameter(e.target.value)}
+                  className="w-20 bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-3">
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Dataset settings</p>
             <div className="grid grid-cols-2 gap-2 text-xs">
               <label className="space-y-1">
@@ -2042,8 +2115,8 @@ export default function THzAnalyzer() {
                   <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart margin={{ top: 15, right: 25, bottom: 40, left: 20 }}>
                       <CartesianGrid stroke="#cbd5e1" strokeDasharray="3 3" />
-                      <XAxis dataKey="x" type="number" domain={[0, powerXTicks.length ? powerXTicks[powerXTicks.length - 1] : 'auto']} ticks={powerXTicks} tickFormatter={(v) => (Math.round(v) % 10 === 0 ? v : '')} stroke="#334155" tick={{ fontSize: 11 }}
-                        label={{ value: 'Power (mW)', position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
+                      <XAxis dataKey="x" type="number" domain={[0, powerXTicks.length ? powerXTicks[powerXTicks.length - 1] : 'auto']} ticks={powerXTicks} tickFormatter={(v) => (powerXUnit === 'fluence' ? v.toFixed(2) : Math.round(v))} stroke="#334155" tick={{ fontSize: 11 }}
+                        label={{ value: powerXUnit === 'fluence' ? 'Fluence (mJ/cm²)' : 'Power (mW)', position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
                       <YAxis dataKey="y" type="number" stroke="#334155" tick={{ fontSize: 11 }}
                         label={{ value: 'Peak-to-peak amplitude (a.u.)', angle: -90, position: 'center', dx: -35, fill: '#334155', fontSize: 11 }} />
                       <Tooltip contentStyle={{ background: '#ffffff', border: '1px solid #94a3b8', fontSize: 12 }} labelStyle={{ color: '#1e293b' }} />
@@ -2063,7 +2136,7 @@ export default function THzAnalyzer() {
                       <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: pd.color }} />
                       {pd.name}
                       <span className="text-slate-500">
-                        {pd.fit ? <>(P<sub>sat</sub> = {roundDisp(pd.fit.Psat)} mW)</> : '(fit unavailable)'}
+                        {pd.fit ? <>({powerXUnit === 'fluence' ? 'F' : 'P'}<sub>sat</sub> = {roundDisp(pd.fit.Psat)} {powerXUnit === 'fluence' ? 'mJ/cm²' : 'mW'})</> : '(fit unavailable)'}
                       </span>
                     </span>
                   ))}
