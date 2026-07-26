@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import Papa from 'papaparse';
 import * as math from 'mathjs';
 import {
@@ -136,12 +136,16 @@ function computeFFT(time, amplitude, opts) {
   const half = Math.floor(paddedLen / 2);
   const freqs = new Array(half);
   const mags = new Array(half);
+  const re = new Array(half);
+  const im = new Array(half);
   for (let k = 0; k < half; k++) {
     freqs[k] = k / (paddedLen * dt_ps); // THz, since dt_ps is in picoseconds
     const c = spectrum[k];
     mags[k] = Math.hypot(c.re, c.im);
+    re[k] = c.re;
+    im[k] = c.im;
   }
-  return { freqs, mags };
+  return { freqs, mags, re, im };
 }
 
 function toDB(mags) {
@@ -249,6 +253,34 @@ function parseFileText(text) {
 }
 
 // Draws a full black rectangle around the plot area (recharts only draws the bottom/left axis lines by default).
+// A number input for controlled numeric ranges (axis min/max etc.) that keeps its own draft
+// text while the user is typing. Binding a number input directly to a parsed Number value
+// causes intermediate states like "-" or "5." to get wiped on every keystroke's re-render,
+// making it impossible to type a negative number. This commits to the parent only once the
+// draft parses to a real number, and re-syncs from the parent when it changes externally
+// (e.g. a drag-zoom or Reset), without clobbering an in-progress edit.
+function NumberRangeField({ value, onCommit, className }) {
+  const [text, setText] = useState(() => (Number.isFinite(value) ? String(value) : ''));
+
+  useEffect(() => {
+    const parsed = Number(text);
+    if (!(Number.isFinite(parsed) && Math.abs(parsed - value) < 1e-9)) {
+      setText(Number.isFinite(value) ? String(value) : '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  const handleChange = (e) => {
+    const v = e.target.value;
+    setText(v);
+    if (v === '' || v === '-') return; // let the user keep typing
+    const parsed = Number(v);
+    if (Number.isFinite(parsed)) onCommit(parsed);
+  };
+
+  return <input type="number" step="any" value={text} onChange={handleChange} className={className} />;
+}
+
 function ChartBorder({ offset }) {
   if (!offset) return null;
   return (
@@ -561,6 +593,72 @@ function buildLinGrid(min, max, count) {
   return Array.from({ length: count }, (_, i) => min + i * step);
 }
 
+// ---------- Tab 3: complex FFT-domain convolution/deconvolution helpers ----------
+
+function complexMultiply(aRe, aIm, bRe, bIm) {
+  return { re: aRe * bRe - aIm * bIm, im: aRe * bIm + aIm * bRe };
+}
+
+function complexDivide(aRe, aIm, bRe, bIm) {
+  const denom = bRe * bRe + bIm * bIm;
+  if (denom < 1e-30) return { re: 0, im: 0 };
+  return { re: (aRe * bRe + aIm * bIm) / denom, im: (aIm * bRe - aRe * bIm) / denom };
+}
+
+function unwrapPhase(phase) {
+  const out = phase.slice();
+  for (let i = 1; i < out.length; i++) {
+    let diff = out[i] - out[i - 1];
+    while (diff > Math.PI) { out[i] -= 2 * Math.PI; diff = out[i] - out[i - 1]; }
+    while (diff < -Math.PI) { out[i] += 2 * Math.PI; diff = out[i] - out[i - 1]; }
+  }
+  return out;
+}
+
+// Finds contiguous [start,end] frequency spans where `flags[i]` is true, for shading
+// the frequency range where deconvolution is numerically unreliable.
+function findTrueSpans(freqs, flags) {
+  const spans = [];
+  let start = null;
+  for (let i = 0; i < flags.length; i++) {
+    if (flags[i] && start === null) start = freqs[i];
+    if (!flags[i] && start !== null) { spans.push([start, freqs[i - 1]]); start = null; }
+  }
+  if (start !== null) spans.push([start, freqs[freqs.length - 1]]);
+  return spans;
+}
+
+// Resolves a card's source id to either a Tab 1 dataset (computing its FFT fresh) or an
+// earlier Tab 3 card's already-computed complex spectrum.
+function resolveConvSource(id, datasetsList, processingOptsLocal, resolvedSoFar, rawFftCache) {
+  if (!id) return null;
+  const ds = datasetsList.find((d) => d.id === id);
+  if (ds) {
+    const settingsKey = JSON.stringify(processingOptsLocal);
+    const cached = rawFftCache.get(id);
+    if (cached && cached.time === ds.time && cached.amplitude === ds.amplitude && cached.settingsKey === settingsKey) {
+      return { freqs: cached.freqs, re: cached.re, im: cached.im, mags: cached.mags, name: ds.name };
+    }
+    const { freqs, re, im, mags } = computeFFT(ds.time, ds.amplitude, processingOptsLocal);
+    rawFftCache.set(id, { time: ds.time, amplitude: ds.amplitude, settingsKey, freqs, re, im, mags });
+    return { freqs, re, im, mags, name: ds.name };
+  }
+  const card = resolvedSoFar.find((r) => r.id === id);
+  if (card && card.freqs) return { freqs: card.freqs, re: card.re, im: card.im, mags: card.mags, name: card.name };
+  return null;
+}
+
+// Robust dB y-domain (ignores the bottom ~3% of values), same fix used for Tab 1's FFT axis
+// to avoid the numerical floor-clamp artifact skewing the auto-range.
+function computeDbYDomain(magsDB) {
+  if (!magsDB || !magsDB.length) return [-40, 0];
+  const vals = magsDB.slice().sort((a, b) => a - b);
+  const lo = vals[Math.max(0, Math.floor(0.03 * (vals.length - 1)))];
+  const hi = vals[vals.length - 1];
+  const pad = (hi - lo) * 0.1 || 1;
+  return [lo - pad, hi + pad];
+}
+
 function roundSig(v, sig = 6) {
   if (v === 0 || !isFinite(v)) return v;
   const mag = Math.ceil(Math.log10(Math.abs(v)));
@@ -765,6 +863,136 @@ export default function THzAnalyzer() {
     saveFile(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'thz_power_dependence.csv', 'CSV file', 'text/csv', ['.csv']);
   };
 
+  // --- Tab 3: FFT convolution / deconvolution ---
+  const [convCards, setConvCards] = useState([]); // [{ id, name, operation, sourceAId, sourceBId, shadeThresholdDB }]
+  const convChartRefsRef = useRef({});
+  const convRawFftCacheRef = useRef(new Map()); // dataset id -> { time, amplitude, settingsKey, freqs, re, im, mags }
+  const getConvChartRef = (id) => {
+    if (!convChartRefsRef.current[id]) convChartRefsRef.current[id] = { current: null };
+    return convChartRefsRef.current[id];
+  };
+
+  // Per-card zoom/pan view state, kept separate from convCards itself so panning/zooming
+  // never retriggers the (expensive) FFT + convolution recompute for any card.
+  const [convXDomains, setConvXDomains] = useState({}); // { [cardId]: [min,max] | undefined }
+  const [convYDomains, setConvYDomains] = useState({});
+  const [convModes, setConvModes] = useState({}); // { [cardId]: 'zoom' | 'pan' }
+  const [convSels, setConvSels] = useState({}); // { [cardId]: {x1,x2,y1,y2} }
+  const convPanRefsRef = useRef({});
+  const convYScaleRefsRef = useRef({});
+  const emptyConvSel = { x1: null, x2: null, y1: null, y2: null };
+
+  const getConvMode = (id) => convModes[id] || 'zoom';
+  const getConvSel = (id) => convSels[id] || emptyConvSel;
+  const getConvPanRef = (id) => {
+    if (!convPanRefsRef.current[id]) convPanRefsRef.current[id] = { dragging: false, startX: 0, startDomain: null };
+    return convPanRefsRef.current[id];
+  };
+
+  const resetConvView = (id) => {
+    setConvXDomains((prev) => ({ ...prev, [id]: undefined }));
+    setConvYDomains((prev) => ({ ...prev, [id]: undefined }));
+    setConvSels((prev) => ({ ...prev, [id]: emptyConvSel }));
+  };
+
+  const handleConvMouseDown = (e, id, xDomainEff, yDomainEff) => {
+    if (!e) return;
+    if (getConvMode(id) === 'zoom') {
+      convYScaleRefsRef.current[id] = makeYScale(getYPixelRange(getConvChartRef(id).current), yDomainEff);
+      const yVal = convYScaleRefsRef.current[id] ? convYScaleRefsRef.current[id].pxToVal(e.chartY) : null;
+      setConvSels((prev) => ({ ...prev, [id]: { x1: e.activeLabel, x2: e.activeLabel, y1: yVal, y2: yVal } }));
+    } else {
+      const panRef = getConvPanRef(id);
+      panRef.dragging = true;
+      panRef.startX = e.chartX;
+      panRef.startDomain = xDomainEff;
+    }
+  };
+
+  const handleConvMouseMove = (e, id) => {
+    if (!e) return;
+    const sel = getConvSel(id);
+    if (getConvMode(id) === 'zoom' && sel.x1 != null) {
+      const yScale = convYScaleRefsRef.current[id];
+      const yVal = yScale ? yScale.pxToVal(e.chartY) : sel.y2;
+      setConvSels((prev) => ({ ...prev, [id]: { ...sel, x2: e.activeLabel, y2: yVal } }));
+    } else if (getConvMode(id) === 'pan' && getConvPanRef(id).dragging) {
+      const wrapper = getConvChartRef(id).current;
+      const plotWidth = wrapper ? Math.max(50, wrapper.clientWidth - 85) : 400;
+      const panRef = getConvPanRef(id);
+      const [d0, d1] = panRef.startDomain;
+      const span = d1 - d0;
+      const deltaPx = e.chartX - panRef.startX;
+      const deltaData = -(deltaPx / plotWidth) * span;
+      setConvXDomains((prev) => ({ ...prev, [id]: [d0 + deltaData, d1 + deltaData] }));
+    }
+  };
+
+  const handleConvMouseUp = (id) => {
+    if (getConvMode(id) === 'zoom') {
+      const { x1, x2, y1, y2 } = getConvSel(id);
+      if (x1 != null && x2 != null && x1 !== x2) setConvXDomains((prev) => ({ ...prev, [id]: [Math.min(x1, x2), Math.max(x1, x2)] }));
+      if (y1 != null && y2 != null && y1 !== y2) setConvYDomains((prev) => ({ ...prev, [id]: [Math.min(y1, y2), Math.max(y1, y2)] }));
+      setConvSels((prev) => ({ ...prev, [id]: emptyConvSel }));
+    } else {
+      getConvPanRef(id).dragging = false;
+    }
+  };
+
+  const handleConvMouseLeave = (id) => {
+    setConvSels((prev) => ({ ...prev, [id]: emptyConvSel }));
+    getConvPanRef(id).dragging = false;
+  };
+
+  const addConvCard = () => {
+    setConvCards((prev) => [...prev, {
+      id: `conv_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      name: `Result ${prev.length + 1}`,
+      operation: 'deconvolve',
+      sourceAId: '',
+      sourceBId: '',
+      shadeThresholdDB: 20,
+      color: COLORS[prev.length % COLORS.length],
+    }]);
+  };
+  const removeConvCard = (id) => {
+    delete convChartRefsRef.current[id];
+    delete convPanRefsRef.current[id];
+    delete convYScaleRefsRef.current[id];
+    setConvXDomains((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setConvYDomains((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setConvModes((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setConvSels((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setConvCards((prev) => prev.filter((c) => c.id !== id));
+  };
+  const updateConvCard = (id, patch) => setConvCards((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+
+  const sourceOptionsForCard = (cardIndex) => [
+    ...datasets.map((d) => ({ id: d.id, name: d.name, group: 'Loaded data' })),
+    ...convCards.slice(0, cardIndex).map((c) => ({ id: c.id, name: c.name, group: 'Previous results' })),
+  ];
+
+  const exportConvCsv = (card) => {
+    if (!card || !card.freqs) { addError('Nothing to export for this card yet.'); return; }
+    const rows = [['Frequency (THz)', 'Magnitude (dB)', 'Phase (rad)']];
+    for (let i = 0; i < card.freqs.length; i++) {
+      rows.push([roundSig(card.freqs[i]), roundSig(card.magsDB[i]), roundSig(card.phase[i])]);
+    }
+    const csv = Papa.unparse(rows);
+    const safeName = (card.name || 'result').replace(/[^a-z0-9_-]+/gi, '_');
+    saveFile(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `${safeName}.csv`, 'CSV file', 'text/csv', ['.csv']);
+  };
+
+  const compareChartRef = useRef(null);
+  const [compareSelectedIds, setCompareSelectedIds] = useState([]);
+  const [compareMode, setCompareMode] = useState('zoom'); // 'zoom' | 'pan'
+  const [compareXDomain, setCompareXDomain] = useState(null);
+  const [compareYDomainState, setCompareYDomainState] = useState(null);
+  const [compareSel, setCompareSel] = useState({ x1: null, x2: null, y1: null, y2: null });
+  const comparePanRef = useRef({ dragging: false, startX: 0, startDomain: null });
+  const compareYScaleRef = useRef(null);
+  const toggleCompareSelection = (id) => setCompareSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
   const timeFullDomain = useMemo(() => {
     let lo = Infinity, hi = -Infinity;
     datasets.forEach((d) => {
@@ -878,6 +1106,170 @@ export default function THzAnalyzer() {
   };
 
   const processingOpts = useMemo(() => ({ windowType, zeroPadFactor, timeUnit }), [windowType, zeroPadFactor, timeUnit]);
+
+  const convResults = useMemo(() => {
+    const resolved = [];
+    convCards.forEach((card) => {
+      if (!card.sourceAId || !card.sourceBId) {
+        resolved.push({ ...card, freqs: null, error: 'Select both Dataset A and Dataset B.' });
+        return;
+      }
+      const sourceA = resolveConvSource(card.sourceAId, datasets, processingOpts, resolved, convRawFftCacheRef.current);
+      const sourceB = resolveConvSource(card.sourceBId, datasets, processingOpts, resolved, convRawFftCacheRef.current);
+      if (!sourceA || !sourceB) {
+        resolved.push({ ...card, freqs: null, error: 'One or both source datasets are missing — reselect.' });
+        return;
+      }
+      const freqHi = Math.min(sourceA.freqs[sourceA.freqs.length - 1], sourceB.freqs[sourceB.freqs.length - 1]);
+      if (!(freqHi > 0)) {
+        resolved.push({ ...card, freqs: null, error: 'No overlapping frequency range between the two sources.' });
+        return;
+      }
+
+      const grid = buildLinGrid(0, freqHi, 2000);
+      const aRe = interpolateSeries(sourceA.freqs, sourceA.re, grid).map((v) => (typeof v === 'number' ? v : 0));
+      const aIm = interpolateSeries(sourceA.freqs, sourceA.im, grid).map((v) => (typeof v === 'number' ? v : 0));
+      const bRe = interpolateSeries(sourceB.freqs, sourceB.re, grid).map((v) => (typeof v === 'number' ? v : 0));
+      const bIm = interpolateSeries(sourceB.freqs, sourceB.im, grid).map((v) => (typeof v === 'number' ? v : 0));
+
+      const resRe = new Array(grid.length);
+      const resIm = new Array(grid.length);
+      const resMag = new Array(grid.length);
+      const rawPhase = new Array(grid.length);
+      for (let i = 0; i < grid.length; i++) {
+        const c = card.operation === 'convolve'
+          ? complexMultiply(aRe[i], aIm[i], bRe[i], bIm[i])
+          : complexDivide(aRe[i], aIm[i], bRe[i], bIm[i]);
+        resRe[i] = c.re;
+        resIm[i] = c.im;
+        resMag[i] = Math.hypot(c.re, c.im);
+        rawPhase[i] = Math.atan2(c.im, c.re);
+      }
+      const magsDB = toDB(resMag);
+      const phase = unwrapPhase(rawPhase);
+
+      const aMag = new Array(grid.length);
+      const bMag = new Array(grid.length);
+      for (let i = 0; i < grid.length; i++) {
+        aMag[i] = Math.hypot(aRe[i], aIm[i]);
+        bMag[i] = Math.hypot(bRe[i], bIm[i]);
+      }
+      const peakAMag = Math.max(...aMag) || 1;
+      const peakBMag = Math.max(...bMag) || 1;
+      // Bins where either operand is numerically negligible relative to its own peak (e.g. the
+      // DC bin, which is always suppressed toward zero by mean-removal before the FFT) produce
+      // meaningless floor-clamp artifacts regardless of operation — exclude these from y-scaling.
+      const degenerateFlags = grid.map((_, i) => aMag[i] < peakAMag * 1e-6 || bMag[i] < peakBMag * 1e-6);
+
+      let unreliableSpans = [];
+      let excludeFlags = degenerateFlags;
+      if (card.operation === 'deconvolve') {
+        const bDB = toDB(bMag);
+        const peakBDB = Math.max(...bDB);
+        const threshold = peakBDB - (Number(card.shadeThresholdDB) || 20);
+        const weakFlags = bDB.map((v) => v < threshold);
+        unreliableSpans = findTrueSpans(grid, weakFlags);
+        excludeFlags = degenerateFlags.map((f, i) => f || weakFlags[i]);
+      }
+      // The y-axis should scale to the trustworthy part of the spectrum only — degenerate/weak
+      // bins can dominate a simple min/max or percentile trim if a large fraction of the
+      // spectrum is affected (not just a rare few outlier bins).
+      const reliableOnly = magsDB.filter((_, i) => !excludeFlags[i]);
+      const scaleMagsDB = reliableOnly.length > 5 ? reliableOnly : magsDB;
+
+      const stride = Math.max(1, Math.floor(grid.length / 1500));
+      const chartData = [];
+      for (let i = 0; i < grid.length; i += stride) chartData.push({ x: grid[i], y: magsDB[i] });
+
+      resolved.push({
+        ...card,
+        freqs: grid, re: resRe, im: resIm, mags: resMag, magsDB, scaleMagsDB, phase,
+        chartData, unreliableSpans,
+        sourceAName: sourceA.name, sourceBName: sourceB.name,
+        error: null,
+      });
+    });
+    return resolved;
+  }, [convCards, datasets, processingOpts]);
+
+  const convColorFor = (id) => {
+    const idx = convResults.findIndex((r) => r.id === id);
+    const card = idx !== -1 ? convResults[idx] : null;
+    if (card && /^#[0-9a-fA-F]{6}$/.test(card.color)) return card.color;
+    return COLORS[Math.max(0, idx) % COLORS.length];
+  };
+  const compareEntries = convResults.filter((r) => compareSelectedIds.includes(r.id) && !r.error);
+
+  const exportCompareCsv = () => {
+    if (!compareEntries.length) { addError('Select at least one result to export.'); return; }
+    const maxFreq = Math.max(...compareEntries.map((e) => e.freqs[e.freqs.length - 1]));
+    const grid = buildLinGrid(0, maxFreq, 2000);
+    const header = ['Frequency (THz)', ...compareEntries.map((e) => `${e.name} (dB)`)];
+    const columns = compareEntries.map((e) => interpolateSeries(e.freqs, e.magsDB, grid));
+    const rows = [header];
+    for (let i = 0; i < grid.length; i++) {
+      const row = [roundSig(grid[i])];
+      columns.forEach((col) => row.push(typeof col[i] === 'number' ? roundSig(col[i]) : ''));
+      rows.push(row);
+    }
+    const csv = Papa.unparse(rows);
+    saveFile(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'thz_conv_compare.csv', 'CSV file', 'text/csv', ['.csv']);
+  };
+
+  const compareXTop = compareEntries.length ? Math.max(...compareEntries.map((e) => e.freqs[e.freqs.length - 1])) : 6;
+  const autoCompareYDomain = compareEntries.length ? computeDbYDomain(compareEntries.flatMap((e) => e.scaleMagsDB || e.magsDB)) : [-40, 0];
+  const compareXDomainEffective = compareXDomain || [0, compareXTop];
+  const compareYDomainEffective = compareYDomainState || autoCompareYDomain;
+
+  const resetCompareView = () => {
+    setCompareXDomain(null);
+    setCompareYDomainState(null);
+    setCompareSel({ x1: null, x2: null, y1: null, y2: null });
+  };
+
+  const handleCompareMouseDown = (e) => {
+    if (!e) return;
+    if (compareMode === 'zoom') {
+      compareYScaleRef.current = makeYScale(getYPixelRange(compareChartRef.current), compareYDomainEffective);
+      const yVal = compareYScaleRef.current ? compareYScaleRef.current.pxToVal(e.chartY) : null;
+      setCompareSel({ x1: e.activeLabel, x2: e.activeLabel, y1: yVal, y2: yVal });
+    } else {
+      comparePanRef.current = { dragging: true, startX: e.chartX, startDomain: compareXDomainEffective };
+    }
+  };
+
+  const handleCompareMouseMove = (e) => {
+    if (!e) return;
+    if (compareMode === 'zoom' && compareSel.x1 != null) {
+      const yScale = compareYScaleRef.current;
+      const yVal = yScale ? yScale.pxToVal(e.chartY) : compareSel.y2;
+      setCompareSel((sel) => ({ ...sel, x2: e.activeLabel, y2: yVal }));
+    } else if (compareMode === 'pan' && comparePanRef.current.dragging) {
+      const wrapper = compareChartRef.current;
+      const plotWidth = wrapper ? Math.max(50, wrapper.clientWidth - 85) : 400;
+      const [d0, d1] = comparePanRef.current.startDomain;
+      const span = d1 - d0;
+      const deltaPx = e.chartX - comparePanRef.current.startX;
+      const deltaData = -(deltaPx / plotWidth) * span;
+      setCompareXDomain([d0 + deltaData, d1 + deltaData]);
+    }
+  };
+
+  const handleCompareMouseUp = () => {
+    if (compareMode === 'zoom') {
+      const { x1, x2, y1, y2 } = compareSel;
+      if (x1 != null && x2 != null && x1 !== x2) setCompareXDomain([Math.min(x1, x2), Math.max(x1, x2)]);
+      if (y1 != null && y2 != null && y1 !== y2) setCompareYDomainState([Math.min(y1, y2), Math.max(y1, y2)]);
+      setCompareSel({ x1: null, x2: null, y1: null, y2: null });
+    } else {
+      comparePanRef.current = { dragging: false, startX: 0, startDomain: null };
+    }
+  };
+
+  const handleCompareMouseLeave = () => {
+    setCompareSel({ x1: null, x2: null, y1: null, y2: null });
+    comparePanRef.current.dragging = false;
+  };
 
   const addError = (msg) => setErrors((prev) => [...prev, msg]);
   const dismissError = (i) => setErrors((prev) => prev.filter((_, idx) => idx !== i));
@@ -1006,6 +1398,19 @@ export default function THzAnalyzer() {
         datasets: powerDatasets.map((ds) => ({ name: ds.name, color: ds.color, marker: ds.marker, rows: ds.rows })),
         powerXUnit, laserRepRate, laserPulseDuration, laserSpotDiameter,
       },
+      convolution: convCards.map((c) => {
+        const resolveRef = (id) => {
+          const dsIdx = datasets.findIndex((d) => d.id === id);
+          if (dsIdx !== -1) return { kind: 'dataset', index: dsIdx };
+          const cardIdx = convCards.findIndex((cc) => cc.id === id);
+          if (cardIdx !== -1) return { kind: 'card', index: cardIdx };
+          return null;
+        };
+        return {
+          name: c.name, operation: c.operation, shadeThresholdDB: c.shadeThresholdDB, color: c.color,
+          sourceA: resolveRef(c.sourceAId), sourceB: resolveRef(c.sourceBId),
+        };
+      }),
     };
     const json = JSON.stringify(session);
     saveFile(new Blob([json], { type: 'application/json' }), `${name}.json`, 'JSON session file', 'application/json', ['.json']);
@@ -1065,6 +1470,26 @@ export default function THzAnalyzer() {
           if (typeof pd.laserRepRate === 'number') setLaserRepRate(pd.laserRepRate);
           if (typeof pd.laserPulseDuration === 'number') setLaserPulseDuration(pd.laserPulseDuration);
           if (typeof pd.laserSpotDiameter === 'number') setLaserSpotDiameter(pd.laserSpotDiameter);
+        }
+
+        const conv = session.convolution;
+        if (Array.isArray(conv)) {
+          const newCardIds = conv.map((_, i) => `conv_${Date.now()}_${i}_${Math.random().toString(36).slice(2)}`);
+          const resolveRef = (ref) => {
+            if (!ref) return '';
+            if (ref.kind === 'dataset') return (restored[ref.index] && restored[ref.index].id) || '';
+            if (ref.kind === 'card') return newCardIds[ref.index] || '';
+            return '';
+          };
+          setConvCards(conv.map((c, i) => ({
+            id: newCardIds[i],
+            name: c.name || `Result ${i + 1}`,
+            operation: c.operation === 'convolve' ? 'convolve' : 'deconvolve',
+            sourceAId: resolveRef(c.sourceA),
+            sourceBId: resolveRef(c.sourceB),
+            shadeThresholdDB: typeof c.shadeThresholdDB === 'number' ? c.shadeThresholdDB : 20,
+            color: /^#[0-9a-fA-F]{6}$/.test(c.color) ? c.color : COLORS[i % COLORS.length],
+          })));
         }
 
         const derivedName = (typeof session.name === 'string' && session.name.trim())
@@ -1294,7 +1719,13 @@ export default function THzAnalyzer() {
           onClick={() => setActiveTab('power-dep')}
           className={`text-sm px-4 py-2 rounded-t border border-b-0 -mb-px transition ${activeTab === 'power-dep' ? 'bg-white border-slate-400 text-slate-900 font-medium' : 'border-transparent text-slate-600 hover:text-slate-900'}`}
         >
-          Power Dependence
+          Power Fit
+        </button>
+        <button
+          onClick={() => setActiveTab('convolution')}
+          className={`text-sm px-4 py-2 rounded-t border border-b-0 -mb-px transition ${activeTab === 'convolution' ? 'bg-white border-slate-400 text-slate-900 font-medium' : 'border-transparent text-slate-600 hover:text-slate-900'}`}
+        >
+          Conv / Deconv
         </button>
       </div>
 
@@ -2168,6 +2599,376 @@ export default function THzAnalyzer() {
                 </div>
               </>
           </div>
+        </div>
+      </div>
+      )}
+
+      {activeTab === 'convolution' && (
+      <div className="p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">FFT convolution / deconvolution</p>
+          <button
+            onClick={addConvCard}
+            className="flex items-center gap-1.5 text-xs bg-teal-100 border border-teal-500 text-teal-900 rounded px-3 py-1.5 hover:bg-teal-200 transition"
+          >
+            <Sparkles size={12} /> Add new plot
+          </button>
+        </div>
+
+        {convResults.length === 0 && (
+          <p className="text-xs text-slate-600">No plots yet. Click "Add new plot," then pick two datasets (loaded data, or an earlier result from this tab) and an operation — convolution multiplies their complex FFT spectra bin-by-bin, deconvolution divides them.</p>
+        )}
+
+        {convResults.map((card, index) => {
+          const color = /^#[0-9a-fA-F]{6}$/.test(card.color) ? card.color : COLORS[index % COLORS.length];
+          const autoXTop = card.freqs ? card.freqs[card.freqs.length - 1] : 6;
+          const autoYDomain = card.scaleMagsDB ? computeDbYDomain(card.scaleMagsDB) : [-40, 0];
+          const xDomainEff = convXDomains[card.id] || [0, autoXTop];
+          const yDomainEff = convYDomains[card.id] || autoYDomain;
+          const xTicks = niceTicks(xDomainEff[0], xDomainEff[1]);
+          const yTicks = niceTicks(yDomainEff[0], yDomainEff[1]);
+          const sel = getConvSel(card.id);
+          const mode = getConvMode(card.id);
+          const opts = sourceOptionsForCard(index);
+          const groupsA = {};
+          opts.forEach((o) => { (groupsA[o.group] = groupsA[o.group] || []).push(o); });
+
+          return (
+            <div key={card.id} className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <input
+                    value={card.name}
+                    onChange={(e) => updateConvCard(card.id, { name: e.target.value })}
+                    className="bg-white border border-slate-300 rounded px-2 py-1 text-sm font-semibold text-slate-900 w-48"
+                  />
+                  <select
+                    value={card.operation}
+                    onChange={(e) => updateConvCard(card.id, { operation: e.target.value })}
+                    className="bg-white border border-slate-400 rounded px-2 py-1 text-xs text-slate-800"
+                  >
+                    <option value="convolve">Convolution (multiply)</option>
+                    <option value="deconvolve">Deconvolution (divide)</option>
+                  </select>
+                  <input
+                    type="color"
+                    value={color}
+                    onChange={(e) => updateConvCard(card.id, { color: e.target.value })}
+                    className="w-7 h-7 rounded border border-slate-400 p-0 bg-transparent cursor-pointer flex-shrink-0"
+                    title="Pick line color"
+                  />
+                  <input
+                    value={card.color || color}
+                    onChange={(e) => updateConvCard(card.id, { color: e.target.value })}
+                    onBlur={(e) => { if (!/^#[0-9a-fA-F]{6}$/.test(e.target.value.trim())) updateConvCard(card.id, { color }); }}
+                    spellCheck={false}
+                    className="w-20 bg-white border border-slate-400 rounded px-1.5 py-1 text-xs text-slate-800 font-mono uppercase"
+                  />
+                </div>
+                <button onClick={() => removeConvCard(card.id)} className="text-slate-400 hover:text-red-600">
+                  <Trash2 size={14} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
+                <label className="space-y-1">
+                  <span className="text-slate-900 block">Dataset A {card.operation === 'deconvolve' ? '(numerator)' : ''}</span>
+                  <select
+                    value={card.sourceAId}
+                    onChange={(e) => updateConvCard(card.id, { sourceAId: e.target.value })}
+                    className="w-full bg-white border border-slate-400 rounded px-2 py-1.5 text-slate-800"
+                  >
+                    <option value="">— select —</option>
+                    {Object.entries(groupsA).map(([g, items]) => (
+                      <optgroup key={g} label={g}>
+                        {items.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                      </optgroup>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-slate-900 block">Dataset B {card.operation === 'deconvolve' ? '(denominator / reference)' : ''}</span>
+                  <select
+                    value={card.sourceBId}
+                    onChange={(e) => updateConvCard(card.id, { sourceBId: e.target.value })}
+                    className="w-full bg-white border border-slate-400 rounded px-2 py-1.5 text-slate-800"
+                  >
+                    <option value="">— select —</option>
+                    {Object.entries(groupsA).map(([g, items]) => (
+                      <optgroup key={g} label={g}>
+                        {items.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                      </optgroup>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              {card.operation === 'deconvolve' && (
+                <label className="flex items-center gap-2 text-xs mb-3">
+                  <span className="text-slate-900">Shade threshold (dB below Dataset B's peak)</span>
+                  <input
+                    type="number" value={card.shadeThresholdDB}
+                    onChange={(e) => updateConvCard(card.id, { shadeThresholdDB: e.target.value })}
+                    className="w-16 bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                  />
+                  <span className="text-slate-500">— shaded region marks where B is too weak for reliable division</span>
+                </label>
+              )}
+
+              {card.error ? (
+                <p className="text-xs text-amber-800 bg-amber-50 border border-amber-300 rounded px-3 py-2">{card.error}</p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 text-xs">
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">X min (THz)</span>
+                      <NumberRangeField
+                        value={roundDisp(xDomainEff[0])}
+                        onCommit={(v) => setConvXDomains((prev) => ({ ...prev, [card.id]: [v, xDomainEff[1]] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">X max (THz)</span>
+                      <NumberRangeField
+                        value={roundDisp(xDomainEff[1])}
+                        onCommit={(v) => setConvXDomains((prev) => ({ ...prev, [card.id]: [xDomainEff[0], v] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">Y min (dB)</span>
+                      <NumberRangeField
+                        value={roundDisp(yDomainEff[0])}
+                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [card.id]: [v, yDomainEff[1]] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">Y max (dB)</span>
+                      <NumberRangeField
+                        value={roundDisp(yDomainEff[1])}
+                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [card.id]: [yDomainEff[0], v] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                  </div>
+                  <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                    <p className="text-xs text-slate-500">{card.sourceAName} {card.operation === 'convolve' ? '×' : '÷'} {card.sourceBName}</p>
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={() => setConvModes((prev) => ({ ...prev, [card.id]: 'zoom' }))}
+                        title="Drag to zoom into a region"
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${mode === 'zoom' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                      >
+                        <ZoomIn size={12} /> Zoom
+                      </button>
+                      <button
+                        onClick={() => setConvModes((prev) => ({ ...prev, [card.id]: 'pan' }))}
+                        title="Drag to shift the view"
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${mode === 'pan' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                      >
+                        <Move size={12} /> Pan
+                      </button>
+                      <button
+                        onClick={() => resetConvView(card.id)}
+                        title="Reset to full view"
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                      >
+                        <RotateCcw size={12} /> Reset
+                      </button>
+                      <span className="w-px bg-slate-300 mx-0.5" />
+                      <button
+                        onClick={() => openExportDialog(getConvChartRef(card.id), (card.name || 'result').replace(/[^a-z0-9_-]+/gi, '_'), [{ name: card.name, color }], 'png')}
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                      >
+                        <Download size={12} /> PNG
+                      </button>
+                      <button
+                        onClick={() => openExportDialog(getConvChartRef(card.id), (card.name || 'result').replace(/[^a-z0-9_-]+/gi, '_'), [{ name: card.name, color }], 'svg')}
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                      >
+                        <Download size={12} /> SVG
+                      </button>
+                      <button
+                        onClick={() => exportConvCsv(card)}
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                      >
+                        <Download size={12} /> CSV
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    className="h-80 select-none" ref={getConvChartRef(card.id)} onMouseDown={(e) => e.preventDefault()}
+                    style={{ cursor: mode === 'pan' ? 'grab' : 'crosshair', userSelect: 'none', WebkitUserSelect: 'none', MozUserSelect: 'none' }}
+                  >
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        margin={{ top: 15, right: 15, bottom: 40, left: 10 }}
+                        onMouseDown={(e) => handleConvMouseDown(e, card.id, xDomainEff, yDomainEff)}
+                        onMouseMove={(e) => handleConvMouseMove(e, card.id)}
+                        onMouseUp={() => handleConvMouseUp(card.id)}
+                        onMouseLeave={() => handleConvMouseLeave(card.id)}
+                        onDoubleClick={() => resetConvView(card.id)}
+                      >
+                        <CartesianGrid stroke="#cbd5e1" strokeDasharray="3 3" />
+                        <XAxis dataKey="x" type="number" domain={xDomainEff} allowDataOverflow ticks={xTicks} tickFormatter={(v) => v.toFixed(2)} stroke="#334155" tick={{ fontSize: 11 }}
+                          label={{ value: 'Frequency (THz)', position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
+                        <YAxis domain={yDomainEff} allowDataOverflow ticks={yTicks} tickFormatter={(v) => v.toFixed(2)} stroke="#334155" tick={{ fontSize: 11 }}
+                          label={{ value: 'Magnitude (dB)', angle: -90, position: 'center', dx: -32, fill: '#334155', fontSize: 11 }} />
+                        <Tooltip contentStyle={{ background: '#ffffff', border: '1px solid #94a3b8', fontSize: 12 }} labelStyle={{ color: '#1e293b' }} />
+                        <Customized component={ChartBorder} />
+                        {card.unreliableSpans && card.unreliableSpans.map((span, i) => (
+                          <ReferenceArea key={i} x1={span[0]} x2={span[1]} fill="#94a3b8" fillOpacity={0.18} stroke="none" ifOverflow="extendDomain" />
+                        ))}
+                        {mode === 'zoom' && sel.x1 != null && sel.x2 != null && (
+                          <ReferenceArea x1={sel.x1} x2={sel.x2} y1={sel.y1} y2={sel.y2} strokeOpacity={0.4} stroke="#0d9488" fill="#0d9488" fillOpacity={0.15} />
+                        )}
+                        <Line data={card.chartData} dataKey="y" stroke={color} dot={false} isAnimationActive={false} strokeWidth={1.4} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })}
+
+        <div className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm">
+          <p className="text-xs uppercase tracking-wide text-slate-600 font-mono mb-2">Compare results</p>
+          {convResults.filter((r) => !r.error).length === 0 ? (
+            <p className="text-xs text-slate-600">Add and configure at least one plot above to compare results here.</p>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-3 mb-3 text-xs">
+                {convResults.filter((r) => !r.error).map((r) => (
+                  <label key={r.id} className="flex items-center gap-1.5">
+                    <input type="checkbox" checked={compareSelectedIds.includes(r.id)} onChange={() => toggleCompareSelection(r.id)} className="accent-teal-600" />
+                    <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: convColorFor(r.id) }} />
+                    {r.name}
+                  </label>
+                ))}
+              </div>
+
+              {compareEntries.length === 0 ? (
+                <p className="text-xs text-slate-600">Select one or more results above to overlay them here.</p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 text-xs">
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">X min (THz)</span>
+                      <NumberRangeField
+                        value={roundDisp(compareXDomainEffective[0])}
+                        onCommit={(v) => setCompareXDomain([v, compareXDomainEffective[1]])}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">X max (THz)</span>
+                      <NumberRangeField
+                        value={roundDisp(compareXDomainEffective[1])}
+                        onCommit={(v) => setCompareXDomain([compareXDomainEffective[0], v])}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">Y min (dB)</span>
+                      <NumberRangeField
+                        value={roundDisp(compareYDomainEffective[0])}
+                        onCommit={(v) => setCompareYDomainState([v, compareYDomainEffective[1]])}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">Y max (dB)</span>
+                      <NumberRangeField
+                        value={roundDisp(compareYDomainEffective[1])}
+                        onCommit={(v) => setCompareYDomainState([compareYDomainEffective[0], v])}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                  </div>
+                  <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                    <button onClick={resetCompareView} className="text-xs text-slate-600 hover:text-teal-800 underline underline-offset-2">
+                      Reset to auto
+                    </button>
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={() => setCompareMode('zoom')}
+                        title="Drag to zoom into a region"
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${compareMode === 'zoom' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                      >
+                        <ZoomIn size={12} /> Zoom
+                      </button>
+                      <button
+                        onClick={() => setCompareMode('pan')}
+                        title="Drag to shift the view"
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${compareMode === 'pan' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                      >
+                        <Move size={12} /> Pan
+                      </button>
+                      <button
+                        onClick={resetCompareView}
+                        title="Reset to full view"
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                      >
+                        <RotateCcw size={12} /> Reset
+                      </button>
+                      <span className="w-px bg-slate-300 mx-0.5" />
+                      <button
+                        onClick={() => openExportDialog(compareChartRef, 'thz_conv_compare', compareEntries.map((e) => ({ name: e.name, color: convColorFor(e.id) })), 'png')}
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                      >
+                        <Download size={12} /> PNG
+                      </button>
+                      <button
+                        onClick={() => openExportDialog(compareChartRef, 'thz_conv_compare', compareEntries.map((e) => ({ name: e.name, color: convColorFor(e.id) })), 'svg')}
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                      >
+                        <Download size={12} /> SVG
+                      </button>
+                      <button
+                        onClick={exportCompareCsv}
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                      >
+                        <Download size={12} /> CSV
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    className="h-96 select-none" ref={compareChartRef} onMouseDown={(e) => e.preventDefault()}
+                    style={{ cursor: compareMode === 'pan' ? 'grab' : 'crosshair', userSelect: 'none', WebkitUserSelect: 'none', MozUserSelect: 'none' }}
+                  >
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        margin={{ top: 15, right: 15, bottom: 40, left: 10 }}
+                        onMouseDown={handleCompareMouseDown}
+                        onMouseMove={handleCompareMouseMove}
+                        onMouseUp={handleCompareMouseUp}
+                        onMouseLeave={handleCompareMouseLeave}
+                        onDoubleClick={resetCompareView}
+                      >
+                        <CartesianGrid stroke="#cbd5e1" strokeDasharray="3 3" />
+                        <XAxis dataKey="x" type="number" domain={compareXDomainEffective} allowDataOverflow ticks={niceTicks(compareXDomainEffective[0], compareXDomainEffective[1])} tickFormatter={(v) => v.toFixed(2)} stroke="#334155" tick={{ fontSize: 11 }}
+                          label={{ value: 'Frequency (THz)', position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
+                        <YAxis domain={compareYDomainEffective} allowDataOverflow ticks={niceTicks(compareYDomainEffective[0], compareYDomainEffective[1])} tickFormatter={(v) => v.toFixed(2)} stroke="#334155" tick={{ fontSize: 11 }}
+                          label={{ value: 'Magnitude (dB)', angle: -90, position: 'center', dx: -32, fill: '#334155', fontSize: 11 }} />
+                        <Tooltip contentStyle={{ background: '#ffffff', border: '1px solid #94a3b8', fontSize: 12 }} labelStyle={{ color: '#1e293b' }} />
+                        <Legend verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: 11, paddingTop: 20 }} />
+                        <Customized component={ChartBorder} />
+                        {compareMode === 'zoom' && compareSel.x1 != null && compareSel.x2 != null && (
+                          <ReferenceArea x1={compareSel.x1} x2={compareSel.x2} y1={compareSel.y1} y2={compareSel.y2} strokeOpacity={0.4} stroke="#0d9488" fill="#0d9488" fillOpacity={0.15} />
+                        )}
+                        {compareEntries.map((e) => (
+                          <Line key={e.id} data={e.chartData} dataKey="y" name={e.name} stroke={convColorFor(e.id)} dot={false} isAnimationActive={false} strokeWidth={1.4} />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>
+              )}
+            </>
+          )}
         </div>
       </div>
       )}
