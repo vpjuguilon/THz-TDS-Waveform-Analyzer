@@ -1982,96 +1982,6 @@ export default function THzAnalyzer() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-3">
-            <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">TDS axis range</p>
-            <div className="space-y-2 text-xs">
-              <div className="grid grid-cols-2 gap-2">
-                <label className="space-y-1">
-                  <span className="text-slate-900 block">X min ({timeUnit})</span>
-                  <input
-                    type="number" step="any"
-                    value={roundDisp((timeDomain || timeFullDomain)[0])}
-                    onChange={(e) => { const v = Number(e.target.value); const cur = timeDomain || timeFullDomain; setTimeDomain([v, cur[1]]); }}
-                    className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
-                  />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-slate-900 block">X max ({timeUnit})</span>
-                  <input
-                    type="number" step="any"
-                    value={roundDisp((timeDomain || timeFullDomain)[1])}
-                    onChange={(e) => { const v = Number(e.target.value); const cur = timeDomain || timeFullDomain; setTimeDomain([cur[0], v]); }}
-                    className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
-                  />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-slate-900 block">Y min (a.u.)</span>
-                  <input
-                    type="number" step="any"
-                    value={roundDisp((timeYDomain || timeYFullDomain)[0])}
-                    onChange={(e) => { const v = Number(e.target.value); const cur = timeYDomain || timeYFullDomain; setTimeYDomain([v, cur[1]]); }}
-                    className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
-                  />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-slate-900 block">Y max (a.u.)</span>
-                  <input
-                    type="number" step="any"
-                    value={roundDisp((timeYDomain || timeYFullDomain)[1])}
-                    onChange={(e) => { const v = Number(e.target.value); const cur = timeYDomain || timeYFullDomain; setTimeYDomain([cur[0], v]); }}
-                    className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
-                  />
-                </label>
-              </div>
-              <button onClick={resetTimeView} className="text-slate-600 hover:text-teal-800 underline underline-offset-2">Reset to auto</button>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-3">
-            <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">FFT axis range</p>
-            <div className="space-y-2 text-xs">
-              <div className="grid grid-cols-2 gap-2">
-                <label className="space-y-1">
-                  <span className="text-slate-900 block">X min (THz)</span>
-                  <input
-                    type="number" step="any"
-                    value={roundDisp((freqDomain || DEFAULT_FREQ_DOMAIN)[0])}
-                    onChange={(e) => { const v = Number(e.target.value); const cur = freqDomain || DEFAULT_FREQ_DOMAIN; setFreqDomain([v, cur[1]]); }}
-                    className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
-                  />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-slate-900 block">X max (THz)</span>
-                  <input
-                    type="number" step="any"
-                    value={roundDisp((freqDomain || DEFAULT_FREQ_DOMAIN)[1])}
-                    onChange={(e) => { const v = Number(e.target.value); const cur = freqDomain || DEFAULT_FREQ_DOMAIN; setFreqDomain([cur[0], v]); }}
-                    className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
-                  />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-slate-900 block">Y min (dB)</span>
-                  <input
-                    type="number" step="any"
-                    value={roundDisp((freqYDomain || freqYFullDomain)[0])}
-                    onChange={(e) => { const v = Number(e.target.value); const cur = freqYDomain || freqYFullDomain; setFreqYDomain([v, cur[1]]); }}
-                    className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
-                  />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-slate-900 block">Y max (dB)</span>
-                  <input
-                    type="number" step="any"
-                    value={roundDisp((freqYDomain || freqYFullDomain)[1])}
-                    onChange={(e) => { const v = Number(e.target.value); const cur = freqYDomain || freqYFullDomain; setFreqYDomain([cur[0], v]); }}
-                    className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
-                  />
-                </label>
-              </div>
-              <button onClick={resetFreqView} className="text-slate-600 hover:text-teal-800 underline underline-offset-2">Reset to auto</button>
-            </div>
-          </div>
-
           <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-2">
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Export data</p>
             <button
@@ -2208,6 +2118,41 @@ export default function THzAnalyzer() {
                 </LineChart>
               </ResponsiveContainer>
             </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 text-xs">
+              <label className="space-y-1">
+                <span className="text-slate-900 block">X min ({timeUnit})</span>
+                <NumberRangeField
+                  value={roundDisp((timeDomain || timeFullDomain)[0])}
+                  onCommit={(v) => setTimeDomain([v, (timeDomain || timeFullDomain)[1]])}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-slate-900 block">X max ({timeUnit})</span>
+                <NumberRangeField
+                  value={roundDisp((timeDomain || timeFullDomain)[1])}
+                  onCommit={(v) => setTimeDomain([(timeDomain || timeFullDomain)[0], v])}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-slate-900 block">Y min (a.u.)</span>
+                <NumberRangeField
+                  value={roundDisp((timeYDomain || timeYFullDomain)[0])}
+                  onCommit={(v) => setTimeYDomain([v, (timeYDomain || timeYFullDomain)[1]])}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-slate-900 block">Y max (a.u.)</span>
+                <NumberRangeField
+                  value={roundDisp((timeYDomain || timeYFullDomain)[1])}
+                  onCommit={(v) => setTimeYDomain([(timeYDomain || timeYFullDomain)[0], v])}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+            </div>
+            <button onClick={resetTimeView} className="mt-2 text-xs text-slate-600 hover:text-teal-800 underline underline-offset-2">Reset to auto</button>
           </div>
 
           {timeMode === 'snapshot' && (
@@ -2340,6 +2285,41 @@ export default function THzAnalyzer() {
                 </LineChart>
               </ResponsiveContainer>
             </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 text-xs">
+              <label className="space-y-1">
+                <span className="text-slate-900 block">X min (THz)</span>
+                <NumberRangeField
+                  value={roundDisp((freqDomain || DEFAULT_FREQ_DOMAIN)[0])}
+                  onCommit={(v) => setFreqDomain([v, (freqDomain || DEFAULT_FREQ_DOMAIN)[1]])}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-slate-900 block">X max (THz)</span>
+                <NumberRangeField
+                  value={roundDisp((freqDomain || DEFAULT_FREQ_DOMAIN)[1])}
+                  onCommit={(v) => setFreqDomain([(freqDomain || DEFAULT_FREQ_DOMAIN)[0], v])}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-slate-900 block">Y min (dB)</span>
+                <NumberRangeField
+                  value={roundDisp((freqYDomain || freqYFullDomain)[0])}
+                  onCommit={(v) => setFreqYDomain([v, (freqYDomain || freqYFullDomain)[1]])}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-slate-900 block">Y max (dB)</span>
+                <NumberRangeField
+                  value={roundDisp((freqYDomain || freqYFullDomain)[1])}
+                  onCommit={(v) => setFreqYDomain([(freqYDomain || freqYFullDomain)[0], v])}
+                  className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
+                />
+              </label>
+            </div>
+            <button onClick={resetFreqView} className="mt-2 text-xs text-slate-600 hover:text-teal-800 underline underline-offset-2">Reset to auto</button>
           </div>
 
           <div className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm overflow-x-auto">
@@ -3033,7 +3013,7 @@ export default function THzAnalyzer() {
         <p className="text-[11px] text-slate-500 font-mono">
           Developed by{' '}
           <a
-            href="https://github.com/vpjuguilon"
+            href="https://vpjuguilon.github.io"
             target="_blank"
             rel="noopener noreferrer"
             className="text-teal-700 hover:text-teal-900 underline underline-offset-2"
