@@ -1,6 +1,6 @@
 # THz Waveform & Spectrum Bench — standalone build
 
-This turns the Claude-artifact version of the tool into a real project you can
+This turns the tool into a real project you can
 build, host online, or package as a shareable file. Everything runs entirely
 in the browser (no backend, no server-side processing) — any data someone
 loads into the tool stays on their own machine.
