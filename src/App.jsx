@@ -148,8 +148,15 @@ function computeFFT(time, amplitude, opts) {
   return { freqs, mags, re, im };
 }
 
+// Converts magnitudes to dB using a floor set RELATIVE to this spectrum's own peak
+// (~ -300 dB below it) rather than an absolute constant. An absolute clamp produced a
+// fixed -240 dB artifact whenever real magnitudes approached it, which then distorted
+// axis auto-scaling downstream.
 function toDB(mags) {
-  return mags.map((m) => 20 * Math.log10(Math.max(m, 1e-12)));
+  let peak = 0;
+  for (let i = 0; i < mags.length; i++) if (mags[i] > peak) peak = mags[i];
+  const floor = peak > 0 ? peak * 1e-15 : Number.MIN_VALUE;
+  return mags.map((m) => 20 * Math.log10(Math.max(m, floor)));
 }
 
 function findPeakIndex(mags) {
@@ -158,23 +165,54 @@ function findPeakIndex(mags) {
   return idx;
 }
 
+// Refines the peak location to sub-bin precision by fitting a parabola through the peak
+// bin and its two neighbours (done in dB, where a spectral peak is closer to quadratic).
+// A raw single-bin argmax jitters between adjacent bins on noisy broadband spectra, which
+// makes peak frequency unstable when comparing datasets.
+function refinePeakFreq(freqs, magsDB, peakIndex) {
+  if (peakIndex <= 0 || peakIndex >= magsDB.length - 1) return freqs[peakIndex];
+  const yL = magsDB[peakIndex - 1];
+  const y0 = magsDB[peakIndex];
+  const yR = magsDB[peakIndex + 1];
+  const denom = yL - 2 * y0 + yR;
+  if (!Number.isFinite(denom) || Math.abs(denom) < 1e-12) return freqs[peakIndex];
+  let delta = (0.5 * (yL - yR)) / denom;
+  if (!Number.isFinite(delta) || Math.abs(delta) > 1) return freqs[peakIndex];
+  const df = freqs[peakIndex + 1] - freqs[peakIndex];
+  return freqs[peakIndex] + delta * df;
+}
+
 function interpCrossing(f1, m1, f2, m2, target) {
   if (m2 === m1) return f1;
   const t = (target - m1) / (m2 - m1);
   return f1 + t * (f2 - f1);
 }
 
-function computeBandwidth(freqs, magsDB, peakIndex, thresholdDB) {
+// Walks outward from the peak to find where the spectrum drops below `thresholdDB`.
+// A crossing only counts if the spectrum STAYS below the threshold for `persist`
+// consecutive bins — otherwise a single noisy bin, or a narrow absorption notch (e.g. a
+// water-vapour line), would prematurely truncate the reported bandwidth.
+function computeBandwidth(freqs, magsDB, peakIndex, thresholdDB, persist = 5) {
+  const staysBelow = (start, step) => {
+    for (let k = 0; k < persist; k++) {
+      const j = start + k * step;
+      if (j < 0 || j >= magsDB.length) return true; // ran off the end: treat as a real crossing
+      if (magsDB[j] >= thresholdDB) return false;
+    }
+    return true;
+  };
+
   let lo = freqs[0];
   let hi = freqs[freqs.length - 1];
+
   for (let i = peakIndex; i > 0; i--) {
-    if (magsDB[i] >= thresholdDB && magsDB[i - 1] < thresholdDB) {
+    if (magsDB[i] >= thresholdDB && magsDB[i - 1] < thresholdDB && staysBelow(i - 1, -1)) {
       lo = interpCrossing(freqs[i - 1], magsDB[i - 1], freqs[i], magsDB[i], thresholdDB);
       break;
     }
   }
   for (let i = peakIndex; i < magsDB.length - 1; i++) {
-    if (magsDB[i] >= thresholdDB && magsDB[i + 1] < thresholdDB) {
+    if (magsDB[i] >= thresholdDB && magsDB[i + 1] < thresholdDB && staysBelow(i + 1, 1)) {
       hi = interpCrossing(freqs[i], magsDB[i], freqs[i + 1], magsDB[i + 1], thresholdDB);
       break;
     }
@@ -182,14 +220,32 @@ function computeBandwidth(freqs, magsDB, peakIndex, thresholdDB) {
   return { lo, hi, width: Math.max(0, hi - lo) };
 }
 
+// Estimates the noise spectral floor from a signal-free stretch of the trace.
+//
+// Two corrections matter here, and both previously biased the floor LOW (inflating the
+// reported SNR/dynamic range by roughly 9 dB combined):
+//   1. An unnormalized DFT's magnitude scales as sqrt(N), so a short segment produces a
+//      smaller magnitude than the same noise would over the full trace. Since the peak is
+//      measured from the full trace, the segment must be scaled by sqrt(N_full/N_seg) to
+//      be comparable.
+//   2. Averaging in dB (mean of logs) sits below the true level because log is concave.
+//      Averaging power in linear units and converting once at the end is unbiased.
 function computeNoiseFloorDB(time, amplitude, region, fraction, opts) {
   const N = time.length;
   const n = Math.max(8, Math.floor(N * fraction));
   const segTime = region === 'end' ? time.slice(N - n) : time.slice(0, n);
   const segAmp = region === 'end' ? amplitude.slice(N - n) : amplitude.slice(0, n);
   const { mags } = computeFFT(segTime, segAmp, opts);
-  const magsDB = toDB(mags);
-  return magsDB.reduce((a, b) => a + b, 0) / magsDB.length;
+  if (!mags.length) return -Infinity;
+
+  const lengthScale = Math.sqrt(N / n);
+  let sumSq = 0;
+  for (let i = 0; i < mags.length; i++) {
+    const m = mags[i] * lengthScale;
+    sumSq += m * m;
+  }
+  const rms = Math.sqrt(sumSq / mags.length);
+  return 20 * Math.log10(Math.max(rms, Number.MIN_VALUE));
 }
 
 // ---------- sample data ----------
@@ -690,8 +746,8 @@ export default function THzAnalyzer() {
   const timeChartWrapRef = useRef(null);
   const freqChartWrapRef = useRef(null);
 
-  const [windowType, setWindowType] = useState('hann');
-  const [zeroPadFactor, setZeroPadFactor] = useState(4);
+  const [windowType, setWindowType] = useState('none');
+  const [zeroPadFactor, setZeroPadFactor] = useState(1);
   const [timeUnit, setTimeUnit] = useState('ps');
 
   const [noiseRegion, setNoiseRegion] = useState('end');
@@ -1518,7 +1574,7 @@ export default function THzAnalyzer() {
       const magsDB = toDB(mags);
       const peakIndex = findPeakIndex(mags);
       const peakDB = magsDB[peakIndex];
-      const peakFreq = freqs[peakIndex];
+      const peakFreq = refinePeakFreq(freqs, magsDB, peakIndex);
 
       const noiseFloorDB = computeNoiseFloorDB(d.time, d.amplitude, noiseRegion, noiseFraction, processingOpts);
       const snrDB = peakDB - noiseFloorDB;
