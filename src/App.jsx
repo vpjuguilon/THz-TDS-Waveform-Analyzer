@@ -368,6 +368,20 @@ function ChartBorder({ offset }) {
 // Note: an inverted range (min > max) is deliberately allowed through — that is a valid
 // intermediate state while someone is typing into the min/max fields, and rejecting it
 // here would snap their partially-entered value back.
+// Formats tooltip values so they match their axis rather than dumping raw float precision
+// (e.g. -0.00399021127298511). `mode` mirrors the corresponding axis tickFormatter.
+function fmtTip(v, mode) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return v;
+  if (mode === 'db') return `${v.toFixed(2)} dB`;
+  if (mode === 'sci') return v === 0 ? '0.000e+0' : v.toExponential(3);
+  return Math.abs(v) >= 0.01 || v === 0 ? v.toFixed(4) : v.toExponential(3);
+}
+
+function fmtTipLabel(l, unit, digits = 3) {
+  const n = Number(l);
+  return Number.isFinite(n) ? `${n.toFixed(digits)} ${unit}` : l;
+}
+
 function validDomain(d) {
   if (!Array.isArray(d) || d.length !== 2) return null;
   if (!Number.isFinite(d[0]) || !Number.isFinite(d[1])) return null;
@@ -2132,7 +2146,7 @@ export default function THzAnalyzer() {
                   <YAxis domain={validDomain(timeYDomain) || timeYFullDomain} ticks={timeYTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }} width={72}
                     tickFormatter={(v) => (v === 0 ? '0.00e+0' : v.toExponential(2))}
                     label={{ value: 'E-field (a.u.)', angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
-                  <Tooltip cursor={false} contentStyle={{ background: '#ffffff', border: '1px solid #94a3b8', fontSize: 12 }} labelStyle={{ color: '#1e293b' }} />
+                  <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => fmtTip(v, 'sci')} labelFormatter={(l) => fmtTipLabel(l, timeUnit)} />
                   <Legend verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: 11, paddingTop: 20 }} />
                   <Customized component={ChartBorder} />
                   {visible.map((d) => (
@@ -2302,7 +2316,7 @@ export default function THzAnalyzer() {
                   <YAxis domain={validDomain(freqYDomain) || freqYFullDomain} ticks={freqYTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }} width={56}
                     tickFormatter={(v) => v.toFixed(2)}
                     label={{ value: displayMode === 'normalized' ? 'dB (rel. peak)' : 'dB (a.u.)', angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
-                  <Tooltip cursor={false} contentStyle={{ background: '#ffffff', border: '1px solid #94a3b8', fontSize: 12 }} labelStyle={{ color: '#1e293b' }} />
+                  <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => fmtTip(v, 'db')} labelFormatter={(l) => fmtTipLabel(l, 'THz')} />
                   <Legend verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: 11, paddingTop: 20 }} />
                   <Customized component={ChartBorder} />
                   {visible.map((d) => (
@@ -2643,7 +2657,7 @@ export default function THzAnalyzer() {
                         label={{ value: powerXUnit === 'fluence' ? 'Fluence (mJ/cm²)' : 'Power (mW)', position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
                       <YAxis dataKey="y" type="number" stroke="#334155" tick={{ fontSize: 11 }}
                         label={{ value: 'Peak-to-peak amplitude (a.u.)', angle: -90, position: 'center', dx: -35, fill: '#334155', fontSize: 11 }} />
-                      <Tooltip cursor={false} contentStyle={{ background: '#ffffff', border: '1px solid #94a3b8', fontSize: 12 }} labelStyle={{ color: '#1e293b' }} />
+                      <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => fmtTip(v, 'auto')} labelFormatter={(l) => fmtTipLabel(l, powerXUnit === 'fluence' ? 'mJ/cm²' : 'mW', 2)} />
                       <Customized component={ChartBorder} />
                       {powerPlotData && powerPlotData.map((pd) => (
                         <Scatter key={`${pd.id}-pts`} data={pd.points} fill={pd.color} shape={pd.marker} name={pd.name} line={false} isAnimationActive={false} />
@@ -2884,7 +2898,7 @@ export default function THzAnalyzer() {
                           label={{ value: 'Frequency (THz)', position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
                         <YAxis domain={yDomainEff} allowDataOverflow ticks={yTicks} tickFormatter={(v) => v.toFixed(2)} stroke="#334155" tick={{ fontSize: 11 }}
                           label={{ value: 'Magnitude (dB)', angle: -90, position: 'center', dx: -32, fill: '#334155', fontSize: 11 }} />
-                        <Tooltip cursor={false} contentStyle={{ background: '#ffffff', border: '1px solid #94a3b8', fontSize: 12 }} labelStyle={{ color: '#1e293b' }} />
+                        <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => fmtTip(v, 'db')} labelFormatter={(l) => fmtTipLabel(l, 'THz')} />
                         <Customized component={ChartBorder} />
                         {card.unreliableSpans && card.unreliableSpans.map((span, i) => (
                           <ReferenceArea key={i} x1={span[0]} x2={span[1]} fill="#94a3b8" fillOpacity={0.18} stroke="none" ifOverflow="extendDomain" />
@@ -3021,7 +3035,7 @@ export default function THzAnalyzer() {
                           label={{ value: 'Frequency (THz)', position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
                         <YAxis domain={compareYDomainEffective} allowDataOverflow ticks={niceTicks(compareYDomainEffective[0], compareYDomainEffective[1])} tickFormatter={(v) => v.toFixed(2)} stroke="#334155" tick={{ fontSize: 11 }}
                           label={{ value: 'Magnitude (dB)', angle: -90, position: 'center', dx: -32, fill: '#334155', fontSize: 11 }} />
-                        <Tooltip cursor={false} contentStyle={{ background: '#ffffff', border: '1px solid #94a3b8', fontSize: 12 }} labelStyle={{ color: '#1e293b' }} />
+                        <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => fmtTip(v, 'db')} labelFormatter={(l) => fmtTipLabel(l, 'THz')} />
                         <Legend verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: 11, paddingTop: 20 }} />
                         <Customized component={ChartBorder} />
                         {compareMode === 'zoom' && compareSel.x1 != null && compareSel.x2 != null && (
