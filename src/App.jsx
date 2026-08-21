@@ -347,6 +347,18 @@ function ChartBorder({ offset }) {
   );
 }
 
+// Returns `d` only if it is a usable [min, max] pair. Guards against a domain that got
+// set to NaN (e.g. from a click where the chart reported no cursor position), which would
+// otherwise blank out the axis ticks and the range input fields until a manual reset.
+// Note: an inverted range (min > max) is deliberately allowed through — that is a valid
+// intermediate state while someone is typing into the min/max fields, and rejecting it
+// here would snap their partially-entered value back.
+function validDomain(d) {
+  if (!Array.isArray(d) || d.length !== 2) return null;
+  if (!Number.isFinite(d[0]) || !Number.isFinite(d[1])) return null;
+  return d;
+}
+
 function niceStep(rawStep) {
   const mag = Math.pow(10, Math.floor(Math.log10(Math.abs(rawStep))));
   const norm = rawStep / mag;
@@ -987,8 +999,8 @@ export default function THzAnalyzer() {
   const handleConvMouseUp = (id) => {
     if (getConvMode(id) === 'zoom') {
       const { x1, x2, y1, y2 } = getConvSel(id);
-      if (x1 != null && x2 != null && x1 !== x2) setConvXDomains((prev) => ({ ...prev, [id]: [Math.min(x1, x2), Math.max(x1, x2)] }));
-      if (y1 != null && y2 != null && y1 !== y2) setConvYDomains((prev) => ({ ...prev, [id]: [Math.min(y1, y2), Math.max(y1, y2)] }));
+      if (Number.isFinite(x1) && Number.isFinite(x2) && x1 !== x2) setConvXDomains((prev) => ({ ...prev, [id]: [Math.min(x1, x2), Math.max(x1, x2)] }));
+      if (Number.isFinite(y1) && Number.isFinite(y2) && y1 !== y2) setConvYDomains((prev) => ({ ...prev, [id]: [Math.min(y1, y2), Math.max(y1, y2)] }));
       setConvSels((prev) => ({ ...prev, [id]: emptyConvSel }));
     } else {
       getConvPanRef(id).dragging = false;
@@ -1079,18 +1091,18 @@ export default function THzAnalyzer() {
     if (!e) return;
     if (chart === 'time') {
       if (timeMode === 'zoom') {
-        const activeYDomain = timeYDomain || timeYFullDomain;
+        const activeYDomain = validDomain(timeYDomain) || timeYFullDomain;
         timeYScaleRef.current = makeYScale(getYPixelRange(timeChartWrapRef.current), activeYDomain);
         const yVal = timeYScaleRef.current ? timeYScaleRef.current.pxToVal(e.chartY) : null;
         setTimeSel({ x1: e.activeLabel, x2: e.activeLabel, y1: yVal, y2: yVal });
       } else if (timeMode === 'snapshot') {
         takeSnapshot(e.activeLabel);
       } else {
-        panRef.current = { dragging: true, startX: e.chartX, startDomain: timeDomain || timeFullDomain, chart: 'time' };
+        panRef.current = { dragging: true, startX: e.chartX, startDomain: validDomain(timeDomain) || timeFullDomain, chart: 'time' };
       }
     } else {
       if (freqMode === 'zoom') {
-        const activeYDomain = freqYDomain || freqYFullDomain;
+        const activeYDomain = validDomain(freqYDomain) || freqYFullDomain;
         freqYScaleRef.current = makeYScale(getYPixelRange(freqChartWrapRef.current), activeYDomain);
         const yVal = freqYScaleRef.current ? freqYScaleRef.current.pxToVal(e.chartY) : null;
         setFreqSel({ x1: e.activeLabel, x2: e.activeLabel, y1: yVal, y2: yVal });
@@ -1137,8 +1149,8 @@ export default function THzAnalyzer() {
     if (chart === 'time') {
       if (timeMode === 'zoom') {
         const { x1, x2, y1, y2 } = timeSel;
-        if (x1 != null && x2 != null && x1 !== x2) setTimeDomain([Math.min(x1, x2), Math.max(x1, x2)]);
-        if (y1 != null && y2 != null && y1 !== y2) setTimeYDomain([Math.min(y1, y2), Math.max(y1, y2)]);
+        if (Number.isFinite(x1) && Number.isFinite(x2) && x1 !== x2) setTimeDomain([Math.min(x1, x2), Math.max(x1, x2)]);
+        if (Number.isFinite(y1) && Number.isFinite(y2) && y1 !== y2) setTimeYDomain([Math.min(y1, y2), Math.max(y1, y2)]);
         setTimeSel(emptySel);
       } else {
         panRef.current = { dragging: false, startX: 0, startDomain: null, chart: null };
@@ -1146,8 +1158,8 @@ export default function THzAnalyzer() {
     } else {
       if (freqMode === 'zoom') {
         const { x1, x2, y1, y2 } = freqSel;
-        if (x1 != null && x2 != null && x1 !== x2) setFreqDomain([Math.min(x1, x2), Math.max(x1, x2)]);
-        if (y1 != null && y2 != null && y1 !== y2) setFreqYDomain([Math.min(y1, y2), Math.max(y1, y2)]);
+        if (Number.isFinite(x1) && Number.isFinite(x2) && x1 !== x2) setFreqDomain([Math.min(x1, x2), Math.max(x1, x2)]);
+        if (Number.isFinite(y1) && Number.isFinite(y2) && y1 !== y2) setFreqYDomain([Math.min(y1, y2), Math.max(y1, y2)]);
         setFreqSel(emptySel);
       } else {
         panRef.current = { dragging: false, startX: 0, startDomain: null, chart: null };
@@ -1274,8 +1286,8 @@ export default function THzAnalyzer() {
 
   const compareXTop = compareEntries.length ? Math.max(...compareEntries.map((e) => e.freqs[e.freqs.length - 1])) : 6;
   const autoCompareYDomain = compareEntries.length ? computeDbYDomain(compareEntries.flatMap((e) => e.scaleMagsDB || e.magsDB)) : [-40, 0];
-  const compareXDomainEffective = compareXDomain || [0, compareXTop];
-  const compareYDomainEffective = compareYDomainState || autoCompareYDomain;
+  const compareXDomainEffective = validDomain(compareXDomain) || [0, compareXTop];
+  const compareYDomainEffective = validDomain(compareYDomainState) || autoCompareYDomain;
 
   const resetCompareView = () => {
     setCompareXDomain(null);
@@ -1314,8 +1326,8 @@ export default function THzAnalyzer() {
   const handleCompareMouseUp = () => {
     if (compareMode === 'zoom') {
       const { x1, x2, y1, y2 } = compareSel;
-      if (x1 != null && x2 != null && x1 !== x2) setCompareXDomain([Math.min(x1, x2), Math.max(x1, x2)]);
-      if (y1 != null && y2 != null && y1 !== y2) setCompareYDomainState([Math.min(y1, y2), Math.max(y1, y2)]);
+      if (Number.isFinite(x1) && Number.isFinite(x2) && x1 !== x2) setCompareXDomain([Math.min(x1, x2), Math.max(x1, x2)]);
+      if (Number.isFinite(y1) && Number.isFinite(y2) && y1 !== y2) setCompareYDomainState([Math.min(y1, y2), Math.max(y1, y2)]);
       setCompareSel({ x1: null, x2: null, y1: null, y2: null });
     } else {
       comparePanRef.current = { dragging: false, startX: 0, startDomain: null };
@@ -1425,7 +1437,7 @@ export default function THzAnalyzer() {
 
   const exportFftCsv = () => {
     if (datasets.length === 0) { addError('No datasets loaded to export.'); return; }
-    const [fLo, fHi] = freqDomain || DEFAULT_FREQ_DOMAIN;
+    const [fLo, fHi] = validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN;
     const xGrid = buildLinGrid(fLo, fHi, 2000);
     const seriesList = datasets.map((d) => {
       const { freqs, mags } = computeFFT(d.time, d.amplitude, processingOpts);
@@ -1561,7 +1573,7 @@ export default function THzAnalyzer() {
   };
 
   const processed = useMemo(() => {
-    const freqLoHi = freqDomain || DEFAULT_FREQ_DOMAIN;
+    const freqLoHi = validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN;
     const settingsKey = JSON.stringify([processingOpts, noiseRegion, noiseFraction, bandwidthMode, marginDB, freqLoHi[1], displayMode]);
 
     return datasets.map((d) => {
@@ -1738,19 +1750,19 @@ export default function THzAnalyzer() {
   }, [visible]);
 
   const timeXTicks = useMemo(() => {
-    const [lo, hi] = timeDomain || timeFullDomain;
+    const [lo, hi] = validDomain(timeDomain) || timeFullDomain;
     return niceTicks(lo, hi);
   }, [timeDomain, timeFullDomain]);
   const timeYTicks = useMemo(() => {
-    const [lo, hi] = timeYDomain || timeYFullDomain;
+    const [lo, hi] = validDomain(timeYDomain) || timeYFullDomain;
     return niceTicks(lo, hi);
   }, [timeYDomain, timeYFullDomain]);
   const freqXTicks = useMemo(() => {
-    const [lo, hi] = freqDomain || DEFAULT_FREQ_DOMAIN;
+    const [lo, hi] = validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN;
     return niceTicks(lo, hi);
   }, [freqDomain]);
   const freqYTicks = useMemo(() => {
-    const [lo, hi] = freqYDomain || freqYFullDomain;
+    const [lo, hi] = validDomain(freqYDomain) || freqYFullDomain;
     return niceTicks(lo, hi);
   }, [freqYDomain, freqYFullDomain]);
 
@@ -2095,9 +2107,9 @@ export default function THzAnalyzer() {
                   onDoubleClick={resetTimeView}
                 >
                   <CartesianGrid stroke="#cbd5e1" strokeDasharray="3 3" />
-                  <XAxis dataKey="x" type="number" domain={timeDomain || timeFullDomain} ticks={timeXTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }}
+                  <XAxis dataKey="x" type="number" domain={validDomain(timeDomain) || timeFullDomain} ticks={timeXTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }}
                     label={{ value: `Time (${timeUnit})`, position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
-                  <YAxis domain={timeYDomain || timeYFullDomain} ticks={timeYTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }} width={72}
+                  <YAxis domain={validDomain(timeYDomain) || timeYFullDomain} ticks={timeYTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }} width={72}
                     tickFormatter={(v) => (v === 0 ? '0.00e+0' : v.toExponential(2))}
                     label={{ value: 'E-field (a.u.)', angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
                   <Tooltip contentStyle={{ background: '#ffffff', border: '1px solid #94a3b8', fontSize: 12 }} labelStyle={{ color: '#1e293b' }} />
@@ -2122,32 +2134,32 @@ export default function THzAnalyzer() {
               <label className="space-y-1">
                 <span className="text-slate-900 block">X min ({timeUnit})</span>
                 <NumberRangeField
-                  value={roundDisp((timeDomain || timeFullDomain)[0])}
-                  onCommit={(v) => setTimeDomain([v, (timeDomain || timeFullDomain)[1]])}
+                  value={roundDisp((validDomain(timeDomain) || timeFullDomain)[0])}
+                  onCommit={(v) => setTimeDomain([v, (validDomain(timeDomain) || timeFullDomain)[1]])}
                   className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
                 />
               </label>
               <label className="space-y-1">
                 <span className="text-slate-900 block">X max ({timeUnit})</span>
                 <NumberRangeField
-                  value={roundDisp((timeDomain || timeFullDomain)[1])}
-                  onCommit={(v) => setTimeDomain([(timeDomain || timeFullDomain)[0], v])}
+                  value={roundDisp((validDomain(timeDomain) || timeFullDomain)[1])}
+                  onCommit={(v) => setTimeDomain([(validDomain(timeDomain) || timeFullDomain)[0], v])}
                   className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
                 />
               </label>
               <label className="space-y-1">
                 <span className="text-slate-900 block">Y min (a.u.)</span>
                 <NumberRangeField
-                  value={roundDisp((timeYDomain || timeYFullDomain)[0])}
-                  onCommit={(v) => setTimeYDomain([v, (timeYDomain || timeYFullDomain)[1]])}
+                  value={roundDisp((validDomain(timeYDomain) || timeYFullDomain)[0])}
+                  onCommit={(v) => setTimeYDomain([v, (validDomain(timeYDomain) || timeYFullDomain)[1]])}
                   className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
                 />
               </label>
               <label className="space-y-1">
                 <span className="text-slate-900 block">Y max (a.u.)</span>
                 <NumberRangeField
-                  value={roundDisp((timeYDomain || timeYFullDomain)[1])}
-                  onCommit={(v) => setTimeYDomain([(timeYDomain || timeYFullDomain)[0], v])}
+                  value={roundDisp((validDomain(timeYDomain) || timeYFullDomain)[1])}
+                  onCommit={(v) => setTimeYDomain([(validDomain(timeYDomain) || timeYFullDomain)[0], v])}
                   className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
                 />
               </label>
@@ -2265,9 +2277,9 @@ export default function THzAnalyzer() {
                   onDoubleClick={resetFreqView}
                 >
                   <CartesianGrid stroke="#cbd5e1" strokeDasharray="3 3" />
-                  <XAxis dataKey="x" type="number" domain={freqDomain || DEFAULT_FREQ_DOMAIN} ticks={freqXTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }}
+                  <XAxis dataKey="x" type="number" domain={validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN} ticks={freqXTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }}
                     label={{ value: 'Frequency (THz)', position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
-                  <YAxis domain={freqYDomain || freqYFullDomain} ticks={freqYTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }} width={56}
+                  <YAxis domain={validDomain(freqYDomain) || freqYFullDomain} ticks={freqYTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }} width={56}
                     tickFormatter={(v) => v.toFixed(2)}
                     label={{ value: displayMode === 'normalized' ? 'dB (rel. peak)' : 'dB (a.u.)', angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
                   <Tooltip contentStyle={{ background: '#ffffff', border: '1px solid #94a3b8', fontSize: 12 }} labelStyle={{ color: '#1e293b' }} />
@@ -2279,7 +2291,7 @@ export default function THzAnalyzer() {
                   {freqMode === 'zoom' && freqSel.x1 != null && freqSel.x2 != null && (
                     <ReferenceArea x1={freqSel.x1} x2={freqSel.x2} y1={freqSel.y1} y2={freqSel.y2} strokeOpacity={0.4} stroke="#0d9488" fill="#0d9488" fillOpacity={0.15} />
                   )}
-                  {showWaterVapor && WATER_VAPOR_LINES.filter((f) => f >= (freqDomain || DEFAULT_FREQ_DOMAIN)[0] && f <= (freqDomain || DEFAULT_FREQ_DOMAIN)[1]).map((f) => (
+                  {showWaterVapor && WATER_VAPOR_LINES.filter((f) => f >= (validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN)[0] && f <= (validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN)[1]).map((f) => (
                     <ReferenceLine key={f} x={f} stroke="#94a3b8" strokeDasharray="2 3" strokeWidth={1} ifOverflow="extendDomain" />
                   ))}
                 </LineChart>
@@ -2289,32 +2301,32 @@ export default function THzAnalyzer() {
               <label className="space-y-1">
                 <span className="text-slate-900 block">X min (THz)</span>
                 <NumberRangeField
-                  value={roundDisp((freqDomain || DEFAULT_FREQ_DOMAIN)[0])}
-                  onCommit={(v) => setFreqDomain([v, (freqDomain || DEFAULT_FREQ_DOMAIN)[1]])}
+                  value={roundDisp((validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN)[0])}
+                  onCommit={(v) => setFreqDomain([v, (validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN)[1]])}
                   className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
                 />
               </label>
               <label className="space-y-1">
                 <span className="text-slate-900 block">X max (THz)</span>
                 <NumberRangeField
-                  value={roundDisp((freqDomain || DEFAULT_FREQ_DOMAIN)[1])}
-                  onCommit={(v) => setFreqDomain([(freqDomain || DEFAULT_FREQ_DOMAIN)[0], v])}
+                  value={roundDisp((validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN)[1])}
+                  onCommit={(v) => setFreqDomain([(validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN)[0], v])}
                   className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
                 />
               </label>
               <label className="space-y-1">
                 <span className="text-slate-900 block">Y min (dB)</span>
                 <NumberRangeField
-                  value={roundDisp((freqYDomain || freqYFullDomain)[0])}
-                  onCommit={(v) => setFreqYDomain([v, (freqYDomain || freqYFullDomain)[1]])}
+                  value={roundDisp((validDomain(freqYDomain) || freqYFullDomain)[0])}
+                  onCommit={(v) => setFreqYDomain([v, (validDomain(freqYDomain) || freqYFullDomain)[1]])}
                   className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
                 />
               </label>
               <label className="space-y-1">
                 <span className="text-slate-900 block">Y max (dB)</span>
                 <NumberRangeField
-                  value={roundDisp((freqYDomain || freqYFullDomain)[1])}
-                  onCommit={(v) => setFreqYDomain([(freqYDomain || freqYFullDomain)[0], v])}
+                  value={roundDisp((validDomain(freqYDomain) || freqYFullDomain)[1])}
+                  onCommit={(v) => setFreqYDomain([(validDomain(freqYDomain) || freqYFullDomain)[0], v])}
                   className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
                 />
               </label>
@@ -2659,8 +2671,8 @@ export default function THzAnalyzer() {
           const color = /^#[0-9a-fA-F]{6}$/.test(card.color) ? card.color : COLORS[index % COLORS.length];
           const autoXTop = card.freqs ? card.freqs[card.freqs.length - 1] : 6;
           const autoYDomain = card.scaleMagsDB ? computeDbYDomain(card.scaleMagsDB) : [-40, 0];
-          const xDomainEff = convXDomains[card.id] || [0, autoXTop];
-          const yDomainEff = convYDomains[card.id] || autoYDomain;
+          const xDomainEff = validDomain(convXDomains[card.id]) || [0, autoXTop];
+          const yDomainEff = validDomain(convYDomains[card.id]) || autoYDomain;
           const xTicks = niceTicks(xDomainEff[0], xDomainEff[1]);
           const yTicks = niceTicks(yDomainEff[0], yDomainEff[1]);
           const sel = getConvSel(card.id);
