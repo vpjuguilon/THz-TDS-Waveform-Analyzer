@@ -1,11 +1,11 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import logoUrl from './assets/logo.png';
 import Papa from 'papaparse';
 import * as math from 'mathjs';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea, ReferenceLine, Customized, ComposedChart, Scatter,
 } from 'recharts';
 import { Upload, Trash2, Eye, EyeOff, Sparkles, X, Download, ZoomIn, Move, RotateCcw, Pencil, Camera, GripVertical } from 'lucide-react';
-import logoUrl from './assets/logo.png';
 
 const COLORS = ['#0d9488', '#d97706', '#db2777', '#4f46e5', '#65a30d', '#ea580c', '#0284c7', '#dc2626'];
 
@@ -316,18 +316,16 @@ function parseFileText(text) {
 // making it impossible to type a negative number. This commits to the parent only once the
 // draft parses to a real number, and re-syncs from the parent when it changes externally
 // (e.g. a drag-zoom or Reset), without clobbering an in-progress edit.
-// Circular header logo, drawn inline as SVG so it needs no image file and works offline.
-//
-// TO USE A REAL LOGO INSTEAD: drop the image in the project's `public/` folder and replace
-// this component's body with:
-//     return <img src="/logo.png" alt="NIP - THz Team" className={`${sizeClass} rounded-full object-cover border-2 border-teal-700`} />;
-// The `rounded-full` class is what crops a square image into a circle.
-function TeamLogo({ sizeClass = 'w-14 h-14' }) {
+// Circular header logo. Expects the image at src/assets/logo.png (imported above, so Vite
+// inlines it into the bundle and the single-file build keeps working).
+// `rounded-full` crops it to a circle and `object-cover` prevents distortion if the source
+// image is not perfectly square, so it needs no pre-cropping.
+function TeamLogo({ sizeClass = 'w-20 h-20' }) {
   return (
     <img
       src={logoUrl}
       alt="NIP - THz Team"
-      className={`${sizeClass} flex-shrink-0 rounded-full object-cover border-2 border-teal-700`}
+      className={`${sizeClass} flex-shrink-0 rounded-full object-cover`}
     />
   );
 }
@@ -1784,21 +1782,21 @@ export default function THzAnalyzer() {
   }, [freqYDomain, freqYFullDomain]);
 
   return (
-    <div className="min-h-full w-full bg-white text-slate-800" style={{ fontFamily: 'Inter, system-ui, sans-serif' }}>
+    <div className="min-h-full w-full bg-[#f7f6f3] text-slate-800" style={{ fontFamily: 'Inter, system-ui, sans-serif' }}>
       <div className="border-b border-slate-400 px-6 py-4">
         <div className="flex items-center gap-4">
           <TeamLogo />
           <div>
-            <p className="text-2xl font-bold tracking-tight text-teal-700 mb-1">NIP - THz Team</p>
+            <p className="text-2xl font-bold tracking-tight text-slate-700 mb-1">NIP - THz Team</p>
             <div className="flex items-baseline gap-3 flex-wrap">
-              <h1 className="text-lg font-semibold tracking-tight text-slate-900">THz Waveform &amp; Spectrum Bench</h1>
+              <h1 className="text-lg font-semibold tracking-tight text-slate-900">THz Waveform &amp; Spectrum Analyzer</h1>
               <span className="text-xs text-slate-600 font-mono">time-domain · FFT · bandwidth · SNR</span>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="flex gap-1 px-6 pt-3 border-b border-slate-400 bg-slate-50">
+      <div className="flex gap-1 px-6 pt-3 border-b border-slate-400 bg-[#efede8]">
         <button
           onClick={() => setActiveTab('tds-fft')}
           className={`text-sm px-4 py-2 rounded-t border border-b-0 -mb-px transition ${activeTab === 'tds-fft' ? 'bg-white border-slate-400 text-slate-900 font-medium' : 'border-transparent text-slate-600 hover:text-slate-900'}`}
@@ -1834,11 +1832,11 @@ export default function THzAnalyzer() {
       <div className="flex flex-row gap-4 p-6 items-start">
         {/* Left: controls + metrics */}
         <div className="w-80 flex-shrink-0 space-y-4">
-          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3">
+          <div className="rounded-lg border border-slate-400 bg-[#efede8] p-3">
             <div className="flex gap-2">
               <button
                 onClick={() => fileInputRef.current.click()}
-                className="flex-1 flex items-center justify-center gap-2 rounded bg-teal-50 border border-teal-400 text-teal-700 text-sm py-2 hover:bg-teal-100 transition"
+                className="flex-1 flex items-center justify-center gap-2 rounded bg-slate-100 border border-slate-500 text-slate-700 text-sm py-2 hover:bg-slate-200 transition"
               >
                 <Upload size={14} /> Upload
               </button>
@@ -1863,7 +1861,7 @@ export default function THzAnalyzer() {
                   key={d.id}
                   onDragOver={(e) => handleDragOverRow(e, index)}
                   onDrop={(e) => handleDropRow(e, index)}
-                  className={`rounded bg-white border px-2 py-1.5 space-y-1 transition ${dragOverIndex === index && dragIndex !== null && dragIndex !== index ? 'border-teal-500 border-2' : 'border-slate-400'} ${dragIndex === index ? 'opacity-40' : ''}`}
+                  className={`rounded bg-white border px-2 py-1.5 space-y-1 transition ${dragOverIndex === index && dragIndex !== null && dragIndex !== index ? 'border-slate-600 border-2' : 'border-slate-400'} ${dragIndex === index ? 'opacity-40' : ''}`}
                 >
                   <div className="flex items-center gap-2">
                     <span
@@ -1887,7 +1885,7 @@ export default function THzAnalyzer() {
                         value={d.name}
                         onChange={(e) => updateDataset(d.id, { name: e.target.value })}
                         title="Click to rename"
-                        className="w-full bg-white border border-slate-300 hover:border-slate-500 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-400/40 rounded pl-1.5 pr-5 py-0.5 text-xs text-slate-800"
+                        className="w-full bg-white border border-slate-300 hover:border-slate-500 focus:border-slate-600 focus:outline-none focus:ring-1 focus:ring-slate-500/40 rounded pl-1.5 pr-5 py-0.5 text-xs text-slate-800"
                       />
                       <Pencil size={10} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400" />
                     </div>
@@ -1928,7 +1926,7 @@ export default function THzAnalyzer() {
             )}
           </div>
 
-          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-3">
+          <div className="rounded-lg border border-slate-400 bg-[#efede8] p-3 space-y-3">
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Processing</p>
             <div className="space-y-2 text-xs">
               <label className="flex items-center justify-between gap-2">
@@ -1961,7 +1959,7 @@ export default function THzAnalyzer() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-3">
+          <div className="rounded-lg border border-slate-400 bg-[#efede8] p-3 space-y-3">
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Noise floor</p>
             <div className="space-y-2 text-xs">
               <label className="flex items-center justify-between gap-2">
@@ -1975,11 +1973,11 @@ export default function THzAnalyzer() {
                 <span className="text-slate-900">Window size</span>
                 <span className="text-slate-900 font-mono">{Math.round(noiseFraction * 100)}%</span>
               </label>
-              <input type="range" min={5} max={45} value={noiseFraction * 100} onChange={(e) => setNoiseFraction(Number(e.target.value) / 100)} className="w-full accent-teal-600" />
+              <input type="range" min={5} max={45} value={noiseFraction * 100} onChange={(e) => setNoiseFraction(Number(e.target.value) / 100)} className="w-full accent-slate-700" />
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-3">
+          <div className="rounded-lg border border-slate-400 bg-[#efede8] p-3 space-y-3">
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Bandwidth</p>
             <div className="space-y-2 text-xs">
               <label className="flex items-center justify-between gap-2">
@@ -1999,7 +1997,7 @@ export default function THzAnalyzer() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-3">
+          <div className="rounded-lg border border-slate-400 bg-[#efede8] p-3 space-y-3">
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Spectrum display</p>
             <div className="space-y-2 text-xs">
               <label className="flex items-center justify-between gap-2">
@@ -2010,29 +2008,29 @@ export default function THzAnalyzer() {
                 </select>
               </label>
               <label className="flex items-center gap-2 pt-1">
-                <input type="checkbox" checked={showWaterVapor} onChange={(e) => setShowWaterVapor(e.target.checked)} className="accent-teal-600" />
+                <input type="checkbox" checked={showWaterVapor} onChange={(e) => setShowWaterVapor(e.target.checked)} className="accent-slate-700" />
                 <span className="text-slate-900">Show water-vapor absorption lines</span>
               </label>
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-2">
+          <div className="rounded-lg border border-slate-400 bg-[#efede8] p-3 space-y-2">
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Export data</p>
             <button
               onClick={exportTdsCsv}
-              className="w-full flex items-center justify-center gap-2 rounded bg-white border border-slate-400 text-slate-800 text-xs py-1.5 hover:border-teal-400 hover:bg-teal-50 transition"
+              className="w-full flex items-center justify-center gap-2 rounded bg-white border border-slate-400 text-slate-800 text-xs py-1.5 hover:border-slate-500 hover:bg-slate-100 transition"
             >
               <Download size={12} /> TDS data (.csv)
             </button>
             <button
               onClick={exportFftCsv}
-              className="w-full flex items-center justify-center gap-2 rounded bg-white border border-slate-400 text-slate-800 text-xs py-1.5 hover:border-teal-400 hover:bg-teal-50 transition"
+              className="w-full flex items-center justify-center gap-2 rounded bg-white border border-slate-400 text-slate-800 text-xs py-1.5 hover:border-slate-500 hover:bg-slate-100 transition"
             >
               <Download size={12} /> FFT data (.csv)
             </button>
           </div>
 
-          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-2">
+          <div className="rounded-lg border border-slate-400 bg-[#efede8] p-3 space-y-2">
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Session</p>
             <label className="block space-y-1">
               <span className="text-xs text-slate-900">Session name</span>
@@ -2046,19 +2044,19 @@ export default function THzAnalyzer() {
             <div className="flex gap-2">
               <button
                 onClick={saveSession}
-                className="flex-1 flex items-center justify-center gap-2 rounded bg-white border border-slate-400 text-slate-800 text-xs py-1.5 hover:border-teal-400 hover:bg-teal-50 transition"
+                className="flex-1 flex items-center justify-center gap-2 rounded bg-white border border-slate-400 text-slate-800 text-xs py-1.5 hover:border-slate-500 hover:bg-slate-100 transition"
               >
                 <Download size={12} /> Save
               </button>
               <button
                 onClick={() => sessionInputRef.current.click()}
-                className="flex-1 flex items-center justify-center gap-2 rounded bg-white border border-slate-400 text-slate-800 text-xs py-1.5 hover:border-teal-400 hover:bg-teal-50 transition"
+                className="flex-1 flex items-center justify-center gap-2 rounded bg-white border border-slate-400 text-slate-800 text-xs py-1.5 hover:border-slate-500 hover:bg-slate-100 transition"
               >
                 <Upload size={12} /> Load
               </button>
             </div>
             {sessionStatus && sessionName && (
-              <p className="text-xs text-teal-800">
+              <p className="text-xs text-slate-900">
                 {sessionStatus === 'saved' ? 'Saved as ' : 'Loaded '}<span className="font-semibold">{sessionName}</span>
               </p>
             )}
@@ -2073,46 +2071,46 @@ export default function THzAnalyzer() {
         <div className="flex-1 min-w-0 space-y-4">
           <div className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between mb-2">
-              <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Time domain</p>
+              <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Time domain (TDS)</p>
               <div className="flex gap-1.5">
                 <button
                   onClick={() => setTimeMode('zoom')}
                   title="Drag to zoom into a region"
-                  className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${timeMode === 'zoom' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                  className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${timeMode === 'zoom' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
                 >
                   <ZoomIn size={12} /> Zoom
                 </button>
                 <button
                   onClick={() => setTimeMode('pan')}
                   title="Drag to shift the view"
-                  className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${timeMode === 'pan' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                  className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${timeMode === 'pan' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
                 >
                   <Move size={12} /> Pan
                 </button>
                 <button
                   onClick={() => setTimeMode('snapshot')}
                   title="Click points on the plot to record y-values below"
-                  className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${timeMode === 'snapshot' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                  className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${timeMode === 'snapshot' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
                 >
                   <Camera size={12} /> Snapshot
                 </button>
                 <button
                   onClick={resetTimeView}
                   title="Reset to full view"
-                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                 >
                   <RotateCcw size={12} /> Reset
                 </button>
                 <span className="w-px bg-slate-300 mx-0.5" />
                 <button
                   onClick={() => openExportDialog(timeChartWrapRef, 'thz_time_domain', legendItems, 'png')}
-                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                 >
                   <Download size={12} /> PNG
                 </button>
                 <button
                   onClick={() => openExportDialog(timeChartWrapRef, 'thz_time_domain', legendItems, 'svg')}
-                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                 >
                   <Download size={12} /> SVG
                 </button>
@@ -2141,12 +2139,12 @@ export default function THzAnalyzer() {
                     <Line key={d.id} data={d.timeChartData} dataKey="y" name={d.name} stroke={d.color} dot={false} isAnimationActive={false} strokeWidth={d.width || 1.4} />
                   ))}
                   {timeMode === 'zoom' && timeSel.x1 != null && timeSel.x2 != null && (
-                    <ReferenceArea x1={timeSel.x1} x2={timeSel.x2} y1={timeSel.y1} y2={timeSel.y2} strokeOpacity={0.4} stroke="#0d9488" fill="#0d9488" fillOpacity={0.15} />
+                    <ReferenceArea x1={timeSel.x1} x2={timeSel.x2} y1={timeSel.y1} y2={timeSel.y2} strokeOpacity={0.4} stroke="#334155" fill="#334155" fillOpacity={0.15} />
                   )}
                   {snapshots.map((s, i) => (
                     <ReferenceLine
-                      key={s.id} x={s.time} stroke="#0f766e" strokeDasharray="2 2" strokeWidth={1} ifOverflow="extendDomain"
-                      label={{ value: indexToLetters(i), position: 'top', fill: '#0f766e', fontSize: 12, fontWeight: 700 }}
+                      key={s.id} x={s.time} stroke="#334155" strokeDasharray="2 2" strokeWidth={1} ifOverflow="extendDomain"
+                      label={{ value: indexToLetters(i), position: 'top', fill: '#334155', fontSize: 12, fontWeight: 700 }}
                     />
                   ))}
                 </LineChart>
@@ -2186,7 +2184,7 @@ export default function THzAnalyzer() {
                 />
               </label>
             </div>
-            <button onClick={resetTimeView} className="mt-2 text-xs text-slate-600 hover:text-teal-800 underline underline-offset-2">Reset to auto</button>
+            <button onClick={resetTimeView} className="mt-2 text-xs text-slate-600 hover:text-slate-900 underline underline-offset-2">Reset to auto</button>
           </div>
 
           {timeMode === 'snapshot' && (
@@ -2225,7 +2223,7 @@ export default function THzAnalyzer() {
                   <tbody>
                     {snapshots.map((s, i) => (
                       <tr key={s.id} className="border-b border-slate-300">
-                        <td className="text-left pr-4 font-mono font-semibold text-teal-800">{indexToLetters(i)}</td>
+                        <td className="text-left pr-4 font-mono font-semibold text-slate-900">{indexToLetters(i)}</td>
                         <td className="text-right pr-4 font-mono">{fmt(s.time, 4)}</td>
                         {snapshotColumns.map((c) => {
                           const en = s.entries.find((e) => e.id === c.id);
@@ -2255,34 +2253,34 @@ export default function THzAnalyzer() {
                 <button
                   onClick={() => setFreqMode('zoom')}
                   title="Drag to zoom into a region"
-                  className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${freqMode === 'zoom' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                  className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${freqMode === 'zoom' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
                 >
                   <ZoomIn size={12} /> Zoom
                 </button>
                 <button
                   onClick={() => setFreqMode('pan')}
                   title="Drag to shift the view"
-                  className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${freqMode === 'pan' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                  className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${freqMode === 'pan' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
                 >
                   <Move size={12} /> Pan
                 </button>
                 <button
                   onClick={resetFreqView}
                   title="Reset to full view"
-                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                 >
                   <RotateCcw size={12} /> Reset
                 </button>
                 <span className="w-px bg-slate-300 mx-0.5" />
                 <button
                   onClick={() => openExportDialog(freqChartWrapRef, 'thz_frequency_domain', legendItems, 'png')}
-                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                 >
                   <Download size={12} /> PNG
                 </button>
                 <button
                   onClick={() => openExportDialog(freqChartWrapRef, 'thz_frequency_domain', legendItems, 'svg')}
-                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                 >
                   <Download size={12} /> SVG
                 </button>
@@ -2311,7 +2309,7 @@ export default function THzAnalyzer() {
                     <Line key={d.id} data={d.freqChartData} dataKey="y" name={d.name} stroke={d.color} dot={false} isAnimationActive={false} strokeWidth={d.width || 1.4} />
                   ))}
                   {freqMode === 'zoom' && freqSel.x1 != null && freqSel.x2 != null && (
-                    <ReferenceArea x1={freqSel.x1} x2={freqSel.x2} y1={freqSel.y1} y2={freqSel.y2} strokeOpacity={0.4} stroke="#0d9488" fill="#0d9488" fillOpacity={0.15} />
+                    <ReferenceArea x1={freqSel.x1} x2={freqSel.x2} y1={freqSel.y1} y2={freqSel.y2} strokeOpacity={0.4} stroke="#334155" fill="#334155" fillOpacity={0.15} />
                   )}
                   {showWaterVapor && WATER_VAPOR_LINES.filter((f) => f >= (validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN)[0] && f <= (validDomain(freqDomain) || DEFAULT_FREQ_DOMAIN)[1]).map((f) => (
                     <ReferenceLine key={f} x={f} stroke="#94a3b8" strokeDasharray="2 3" strokeWidth={1} ifOverflow="extendDomain" />
@@ -2353,7 +2351,7 @@ export default function THzAnalyzer() {
                 />
               </label>
             </div>
-            <button onClick={resetFreqView} className="mt-2 text-xs text-slate-600 hover:text-teal-800 underline underline-offset-2">Reset to auto</button>
+            <button onClick={resetFreqView} className="mt-2 text-xs text-slate-600 hover:text-slate-900 underline underline-offset-2">Reset to auto</button>
           </div>
 
           <div className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm overflow-x-auto">
@@ -2365,11 +2363,11 @@ export default function THzAnalyzer() {
                 <thead>
                   <tr className="text-slate-600 border-b border-slate-400">
                     <th className="text-left font-normal py-2 pr-4">Dataset</th>
-                    <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-teal-800" onClick={() => toggleSort('peakToPeak')}>Peak-to-peak (a.u.){sortArrow('peakToPeak')}</th>
-                    <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-teal-800" onClick={() => toggleSort('peakFreq')}>Peak (THz){sortArrow('peakFreq')}</th>
-                    <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-teal-800" onClick={() => toggleSort('bwWidth')}>Bandwidth{sortArrow('bwWidth')}</th>
-                    <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-teal-800" onClick={() => toggleSort('noiseFloorDB')}>Noise floor (dB){sortArrow('noiseFloorDB')}</th>
-                    <th className="text-right font-normal py-2 cursor-pointer select-none hover:text-teal-800" onClick={() => toggleSort('snrDB')}>SNR / DR (dB){sortArrow('snrDB')}</th>
+                    <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-slate-900" onClick={() => toggleSort('peakToPeak')}>Peak-to-peak (a.u.){sortArrow('peakToPeak')}</th>
+                    <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-slate-900" onClick={() => toggleSort('peakFreq')}>Peak (THz){sortArrow('peakFreq')}</th>
+                    <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-slate-900" onClick={() => toggleSort('bwWidth')}>Bandwidth{sortArrow('bwWidth')}</th>
+                    <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-slate-900" onClick={() => toggleSort('noiseFloorDB')}>Noise floor (dB){sortArrow('noiseFloorDB')}</th>
+                    <th className="text-right font-normal py-2 cursor-pointer select-none hover:text-slate-900" onClick={() => toggleSort('snrDB')}>SNR / DR (dB){sortArrow('snrDB')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2398,15 +2396,15 @@ export default function THzAnalyzer() {
       <div className="flex flex-row gap-4 p-6 items-start">
         {/* Left: dataset settings */}
         <div className="w-80 flex-shrink-0 space-y-4">
-          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-3">
+          <div className="rounded-lg border border-slate-400 bg-[#efede8] p-3 space-y-3">
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">X-axis units</p>
             <div className="flex gap-4 text-xs">
               <label className="flex items-center gap-1.5 text-slate-900">
-                <input type="radio" name="powerXUnit" checked={powerXUnit === 'mW'} onChange={() => setPowerXUnit('mW')} className="accent-teal-600" />
+                <input type="radio" name="powerXUnit" checked={powerXUnit === 'mW'} onChange={() => setPowerXUnit('mW')} className="accent-slate-700" />
                 Power (mW)
               </label>
               <label className="flex items-center gap-1.5 text-slate-900">
-                <input type="radio" name="powerXUnit" checked={powerXUnit === 'fluence'} onChange={() => setPowerXUnit('fluence')} className="accent-teal-600" />
+                <input type="radio" name="powerXUnit" checked={powerXUnit === 'fluence'} onChange={() => setPowerXUnit('fluence')} className="accent-slate-700" />
                 Fluence (mJ/cm²)
               </label>
             </div>
@@ -2439,7 +2437,7 @@ export default function THzAnalyzer() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-400 bg-slate-50 p-3 space-y-3">
+          <div className="rounded-lg border border-slate-400 bg-[#efede8] p-3 space-y-3">
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Dataset settings</p>
             <div className="grid grid-cols-2 gap-2 text-xs">
               <label className="space-y-1">
@@ -2527,7 +2525,7 @@ export default function THzAnalyzer() {
                   <tbody>
                     {snapshots.map((s, i) => (
                       <tr key={s.id} className="border-b border-slate-300">
-                        <td className="text-left pr-2 font-mono font-semibold text-teal-800">{indexToLetters(i)}</td>
+                        <td className="text-left pr-2 font-mono font-semibold text-slate-900">{indexToLetters(i)}</td>
                         <td className="text-right pr-2 font-mono">{fmt(s.time, 4)}</td>
                         {snapshotColumns.map((c) => {
                           const en = s.entries.find((e) => e.id === c.id);
@@ -2545,7 +2543,7 @@ export default function THzAnalyzer() {
             <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Data tables</p>
             <button
               onClick={exportPowerDependenceCsv}
-              className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition bg-white"
+              className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition bg-white"
             >
               <Download size={12} /> Export CSV
             </button>
@@ -2623,13 +2621,13 @@ export default function THzAnalyzer() {
               <div className="flex gap-1.5">
                 <button
                   onClick={() => openExportDialog(powerChartWrapRef, 'thz_power_dependence', buildPowerLegendItems(), 'png')}
-                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                 >
                   <Download size={12} /> PNG
                 </button>
                 <button
                   onClick={() => openExportDialog(powerChartWrapRef, 'thz_power_dependence', buildPowerLegendItems(), 'svg')}
-                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                  className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                 >
                   <Download size={12} /> SVG
                 </button>
@@ -2679,7 +2677,7 @@ export default function THzAnalyzer() {
           <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">FFT convolution / deconvolution</p>
           <button
             onClick={addConvCard}
-            className="flex items-center gap-1.5 text-xs bg-teal-100 border border-teal-500 text-teal-900 rounded px-3 py-1.5 hover:bg-teal-200 transition"
+            className="flex items-center gap-1.5 text-xs bg-slate-200 border border-slate-600 text-slate-900 rounded px-3 py-1.5 hover:bg-slate-300 transition"
           >
             <Sparkles size={12} /> Add new plot
           </button>
@@ -2829,40 +2827,40 @@ export default function THzAnalyzer() {
                       <button
                         onClick={() => setConvModes((prev) => ({ ...prev, [card.id]: 'zoom' }))}
                         title="Drag to zoom into a region"
-                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${mode === 'zoom' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${mode === 'zoom' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
                       >
                         <ZoomIn size={12} /> Zoom
                       </button>
                       <button
                         onClick={() => setConvModes((prev) => ({ ...prev, [card.id]: 'pan' }))}
                         title="Drag to shift the view"
-                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${mode === 'pan' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${mode === 'pan' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
                       >
                         <Move size={12} /> Pan
                       </button>
                       <button
                         onClick={() => resetConvView(card.id)}
                         title="Reset to full view"
-                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                       >
                         <RotateCcw size={12} /> Reset
                       </button>
                       <span className="w-px bg-slate-300 mx-0.5" />
                       <button
                         onClick={() => openExportDialog(getConvChartRef(card.id), (card.name || 'result').replace(/[^a-z0-9_-]+/gi, '_'), [{ name: card.name, color }], 'png')}
-                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                       >
                         <Download size={12} /> PNG
                       </button>
                       <button
                         onClick={() => openExportDialog(getConvChartRef(card.id), (card.name || 'result').replace(/[^a-z0-9_-]+/gi, '_'), [{ name: card.name, color }], 'svg')}
-                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                       >
                         <Download size={12} /> SVG
                       </button>
                       <button
                         onClick={() => exportConvCsv(card)}
-                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                       >
                         <Download size={12} /> CSV
                       </button>
@@ -2892,7 +2890,7 @@ export default function THzAnalyzer() {
                           <ReferenceArea key={i} x1={span[0]} x2={span[1]} fill="#94a3b8" fillOpacity={0.18} stroke="none" ifOverflow="extendDomain" />
                         ))}
                         {mode === 'zoom' && sel.x1 != null && sel.x2 != null && (
-                          <ReferenceArea x1={sel.x1} x2={sel.x2} y1={sel.y1} y2={sel.y2} strokeOpacity={0.4} stroke="#0d9488" fill="#0d9488" fillOpacity={0.15} />
+                          <ReferenceArea x1={sel.x1} x2={sel.x2} y1={sel.y1} y2={sel.y2} strokeOpacity={0.4} stroke="#334155" fill="#334155" fillOpacity={0.15} />
                         )}
                         <Line data={card.chartData} dataKey="y" stroke={color} dot={false} isAnimationActive={false} strokeWidth={1.4} />
                       </LineChart>
@@ -2913,7 +2911,7 @@ export default function THzAnalyzer() {
               <div className="flex flex-wrap gap-3 mb-3 text-xs">
                 {convResults.filter((r) => !r.error).map((r) => (
                   <label key={r.id} className="flex items-center gap-1.5">
-                    <input type="checkbox" checked={compareSelectedIds.includes(r.id)} onChange={() => toggleCompareSelection(r.id)} className="accent-teal-600" />
+                    <input type="checkbox" checked={compareSelectedIds.includes(r.id)} onChange={() => toggleCompareSelection(r.id)} className="accent-slate-700" />
                     <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: convColorFor(r.id) }} />
                     {r.name}
                   </label>
@@ -2959,47 +2957,47 @@ export default function THzAnalyzer() {
                     </label>
                   </div>
                   <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-                    <button onClick={resetCompareView} className="text-xs text-slate-600 hover:text-teal-800 underline underline-offset-2">
+                    <button onClick={resetCompareView} className="text-xs text-slate-600 hover:text-slate-900 underline underline-offset-2">
                       Reset to auto
                     </button>
                     <div className="flex gap-1.5">
                       <button
                         onClick={() => setCompareMode('zoom')}
                         title="Drag to zoom into a region"
-                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${compareMode === 'zoom' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${compareMode === 'zoom' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
                       >
                         <ZoomIn size={12} /> Zoom
                       </button>
                       <button
                         onClick={() => setCompareMode('pan')}
                         title="Drag to shift the view"
-                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${compareMode === 'pan' ? 'bg-teal-100 border-teal-500 text-teal-900' : 'text-slate-800 border-slate-400 hover:border-teal-400 hover:bg-teal-50'}`}
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${compareMode === 'pan' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
                       >
                         <Move size={12} /> Pan
                       </button>
                       <button
                         onClick={resetCompareView}
                         title="Reset to full view"
-                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                       >
                         <RotateCcw size={12} /> Reset
                       </button>
                       <span className="w-px bg-slate-300 mx-0.5" />
                       <button
                         onClick={() => openExportDialog(compareChartRef, 'thz_conv_compare', compareEntries.map((e) => ({ name: e.name, color: convColorFor(e.id) })), 'png')}
-                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                       >
                         <Download size={12} /> PNG
                       </button>
                       <button
                         onClick={() => openExportDialog(compareChartRef, 'thz_conv_compare', compareEntries.map((e) => ({ name: e.name, color: convColorFor(e.id) })), 'svg')}
-                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                       >
                         <Download size={12} /> SVG
                       </button>
                       <button
                         onClick={exportCompareCsv}
-                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-teal-900 border border-slate-400 rounded px-2 py-1 hover:border-teal-400 hover:bg-teal-50 transition"
+                        className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition"
                       >
                         <Download size={12} /> CSV
                       </button>
@@ -3027,7 +3025,7 @@ export default function THzAnalyzer() {
                         <Legend verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: 11, paddingTop: 20 }} />
                         <Customized component={ChartBorder} />
                         {compareMode === 'zoom' && compareSel.x1 != null && compareSel.x2 != null && (
-                          <ReferenceArea x1={compareSel.x1} x2={compareSel.x2} y1={compareSel.y1} y2={compareSel.y2} strokeOpacity={0.4} stroke="#0d9488" fill="#0d9488" fillOpacity={0.15} />
+                          <ReferenceArea x1={compareSel.x1} x2={compareSel.x2} y1={compareSel.y1} y2={compareSel.y2} strokeOpacity={0.4} stroke="#334155" fill="#334155" fillOpacity={0.15} />
                         )}
                         {compareEntries.map((e) => (
                           <Line key={e.id} data={e.chartData} dataKey="y" name={e.name} stroke={convColorFor(e.id)} dot={false} isAnimationActive={false} strokeWidth={1.4} />
@@ -3050,7 +3048,7 @@ export default function THzAnalyzer() {
             href="https://vpjuguilon.github.io"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-teal-700 hover:text-teal-900 underline underline-offset-2"
+            className="text-slate-700 hover:text-slate-900 underline underline-offset-2"
           >
             vpjuguilon
           </a>
@@ -3087,7 +3085,7 @@ export default function THzAnalyzer() {
             </div>
             <div className="flex justify-end gap-2">
               <button onClick={() => setExportDialog(null)} className="text-xs px-3 py-1.5 rounded border border-slate-400 text-slate-700 hover:bg-slate-100">Cancel</button>
-              <button onClick={confirmExport} className="text-xs px-3 py-1.5 rounded bg-teal-600 text-white hover:bg-teal-700">Export</button>
+              <button onClick={confirmExport} className="text-xs px-3 py-1.5 rounded bg-slate-700 text-white hover:bg-slate-700">Export</button>
             </div>
           </div>
         </div>
