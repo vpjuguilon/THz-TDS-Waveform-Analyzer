@@ -5,6 +5,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea, ReferenceLine, Customized, ComposedChart, Scatter,
 } from 'recharts';
 import { Upload, Trash2, Eye, EyeOff, Sparkles, X, Download, ZoomIn, Move, RotateCcw, Pencil, Camera, GripVertical } from 'lucide-react';
+import logoUrl from './assets/logo.png';
 
 const COLORS = ['#0d9488', '#d97706', '#db2777', '#4f46e5', '#65a30d', '#ea580c', '#0284c7', '#dc2626'];
 
@@ -315,6 +316,22 @@ function parseFileText(text) {
 // making it impossible to type a negative number. This commits to the parent only once the
 // draft parses to a real number, and re-syncs from the parent when it changes externally
 // (e.g. a drag-zoom or Reset), without clobbering an in-progress edit.
+// Circular header logo, drawn inline as SVG so it needs no image file and works offline.
+//
+// TO USE A REAL LOGO INSTEAD: drop the image in the project's `public/` folder and replace
+// this component's body with:
+//     return <img src="/logo.png" alt="NIP - THz Team" className={`${sizeClass} rounded-full object-cover border-2 border-teal-700`} />;
+// The `rounded-full` class is what crops a square image into a circle.
+function TeamLogo({ sizeClass = 'w-14 h-14' }) {
+  return (
+    <img
+      src={logoUrl}
+      alt="NIP - THz Team"
+      className={`${sizeClass} flex-shrink-0 rounded-full object-cover border-2 border-teal-700`}
+    />
+  );
+}
+
 function NumberRangeField({ value, onCommit, className }) {
   const [text, setText] = useState(() => (Number.isFinite(value) ? String(value) : ''));
 
@@ -1769,10 +1786,15 @@ export default function THzAnalyzer() {
   return (
     <div className="min-h-full w-full bg-white text-slate-800" style={{ fontFamily: 'Inter, system-ui, sans-serif' }}>
       <div className="border-b border-slate-400 px-6 py-4">
-        <p className="text-2xl font-bold tracking-tight text-teal-700 mb-1">NIP - THz Team</p>
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-lg font-semibold tracking-tight text-slate-900">THz Waveform &amp; Spectrum Bench</h1>
-          <span className="text-xs text-slate-600 font-mono">time-domain · FFT · bandwidth · SNR</span>
+        <div className="flex items-center gap-4">
+          <TeamLogo />
+          <div>
+            <p className="text-2xl font-bold tracking-tight text-teal-700 mb-1">NIP - THz Team</p>
+            <div className="flex items-baseline gap-3 flex-wrap">
+              <h1 className="text-lg font-semibold tracking-tight text-slate-900">THz Waveform &amp; Spectrum Bench</h1>
+              <span className="text-xs text-slate-600 font-mono">time-domain · FFT · bandwidth · SNR</span>
+            </div>
+          </div>
         </div>
       </div>
 
