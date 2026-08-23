@@ -251,37 +251,6 @@ function computeNoiseFloorDB(time, amplitude, region, fraction, opts) {
 
 // ---------- sample data ----------
 
-function generateSample(name, color, params) {
-  const { tau, f0, cycles, noiseLevel, t0 } = params;
-  const dt = 0.02;
-  const time = [];
-  const amplitude = [];
-  for (let t = -5; t <= 30; t += dt) {
-    const x = (t - t0) / tau;
-    let e;
-    if (cycles > 1) {
-      e = Math.exp(-x * x) * Math.sin(2 * Math.PI * f0 * (t - t0));
-    } else {
-      e = x * Math.exp(-x * x);
-    }
-    e += (Math.random() * 2 - 1) * noiseLevel;
-    time.push(Number(t.toFixed(4)));
-    amplitude.push(e);
-  }
-  return {
-    id: `${name}_${Math.random().toString(36).slice(2)}`,
-    name, color, visible: true, width: 1.4, time, amplitude,
-  };
-}
-
-function makeSampleSet() {
-  return [
-    generateSample('Emitter A (broadband)', COLORS[0], { tau: 0.12, f0: 0, cycles: 1, noiseLevel: 0.004, t0: 5 }),
-    generateSample('Emitter B (narrowband)', COLORS[1], { tau: 3, f0: 0.55, cycles: 3, noiseLevel: 0.006, t0: 6 }),
-    generateSample('Emitter C (noisy)', COLORS[2], { tau: 0.25, f0: 0, cycles: 1, noiseLevel: 0.03, t0: 4.5 }),
-  ];
-}
-
 // ---------- file parsing ----------
 
 function parseFileText(text) {
@@ -1398,7 +1367,6 @@ export default function THzAnalyzer() {
     });
   }, []);
 
-  const loadSamples = () => setDatasets((prev) => [...prev, ...makeSampleSet()]);
   const clearAll = () => { fftCacheRef.current.clear(); setDatasets([]); };
   const removeDataset = (id) => { fftCacheRef.current.delete(id); setDatasets((prev) => prev.filter((d) => d.id !== id)); };
 
@@ -1854,12 +1822,6 @@ export default function THzAnalyzer() {
               >
                 <Upload size={14} /> Upload
               </button>
-              <button
-                onClick={loadSamples}
-                className="flex-1 flex items-center justify-center gap-2 rounded bg-white border border-slate-500 text-slate-900 text-sm py-2 hover:bg-slate-100 transition"
-              >
-                <Sparkles size={14} /> Sample data
-              </button>
             </div>
             <input
               ref={fileInputRef} type="file" multiple accept=".csv,.txt" className="hidden"
@@ -1868,7 +1830,7 @@ export default function THzAnalyzer() {
 
             <div className="mt-3 space-y-1.5 max-h-96 overflow-y-auto pr-1">
               {datasets.length === 0 && (
-                <p className="text-xs text-slate-600 py-2">No datasets loaded. Upload a two-column time/amplitude .csv or .txt file, or load sample data to try the tool.</p>
+                <p className="text-xs text-slate-600 py-2">No datasets loaded. Upload a two-column time/amplitude .csv, .txt or .dat file to get started.</p>
               )}
               {datasets.map((d, index) => (
                 <div
