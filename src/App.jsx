@@ -31,9 +31,22 @@ function indexToLetters(i) {
 
 // Fits amplitude(P) = Amax * P / (P + Psat) via damped Gauss-Newton (Levenberg-Marquardt style).
 // Only 2 free parameters, so a hand-rolled solver is simple and fast enough for this data size.
+//
+// The fit runs on data normalized to order 1 (x / max(x), y / max(y)) and the parameters are
+// rescaled afterwards. This makes the solver scale-invariant: its internal thresholds (singular
+// determinant, convergence) are absolute numbers, which previously caused the solver to abort on
+// its first iteration whenever the data were far from order 1 — e.g. small lock-in amplitudes
+// (~1e-4) plotted against power in mW — silently returning the initial guess (Psat = median power)
+// instead of a real fit. Whether it failed depended on the axis units, which is why the fit
+// appeared to work in fluence mode but not in power mode.
 function fitSaturationCurve(powers, amps) {
-  const pts = powers.map((p, i) => ({ p, a: amps[i] })).filter((pt) => Number.isFinite(pt.p) && Number.isFinite(pt.a) && pt.p > 0);
-  if (pts.length < 2) return null;
+  const raw = powers.map((p, i) => ({ p, a: amps[i] })).filter((pt) => Number.isFinite(pt.p) && Number.isFinite(pt.a) && pt.p > 0);
+  if (raw.length < 2) return null;
+
+  const xScale = Math.max(...raw.map((pt) => pt.p));
+  const yScale = Math.max(...raw.map((pt) => Math.abs(pt.a))) || 1;
+  if (!(xScale > 0) || !(yScale > 0)) return null;
+  const pts = raw.map((pt) => ({ p: pt.p / xScale, a: pt.a / yScale }));
 
   let Amax = Math.max(...pts.map((pt) => pt.a)) * 1.3 || 1;
   const sortedP = [...pts.map((pt) => pt.p)].sort((a, b) => a - b);
@@ -43,7 +56,7 @@ function fitSaturationCurve(powers, amps) {
   let lambda = 1e-3;
   let prevSSE = Infinity;
 
-  for (let iter = 0; iter < 200; iter++) {
+  for (let iter = 0; iter < 500; iter++) {
     let JTJ00 = 0, JTJ01 = 0, JTJ11 = 0, JTr0 = 0, JTr1 = 0, sse = 0;
     for (const { p, a } of pts) {
       const denom = p + Psat;
@@ -61,7 +74,8 @@ function fitSaturationCurve(powers, amps) {
     const a00 = JTJ00 * (1 + lambda);
     const a11 = JTJ11 * (1 + lambda);
     const det = a00 * a11 - JTJ01 * JTJ01;
-    if (Math.abs(det) < 1e-12) break;
+    // Relative singularity test (scale-free), not an absolute cutoff.
+    if (!(Math.abs(det) > 1e-14 * Math.abs(a00 * a11))) { lambda *= 3; if (lambda > 1e8) break; continue; }
     const deltaAmax = (-JTr0 * a11 + JTr1 * JTJ01) / det;
     const deltaPsat = (-a00 * JTr1 + JTJ01 * JTr0) / det;
     const nextAmax = Amax + deltaAmax;
@@ -76,7 +90,8 @@ function fitSaturationCurve(powers, amps) {
       Amax = nextAmax;
       Psat = nextPsat;
       lambda = Math.max(lambda * 0.6, 1e-8);
-      if (Math.abs(prevSSE - nextSSE) < 1e-14) { prevSSE = nextSSE; break; }
+      // Relative convergence: stop once an accepted step improves SSE by < 1e-12 of its value.
+      if (Math.abs(prevSSE - nextSSE) <= 1e-12 * Math.max(nextSSE, 1e-30)) { prevSSE = nextSSE; break; }
       prevSSE = nextSSE;
     } else {
       lambda *= 3;
@@ -85,7 +100,7 @@ function fitSaturationCurve(powers, amps) {
   }
 
   if (!Number.isFinite(Amax) || !Number.isFinite(Psat) || Psat <= 0) return null;
-  return { Amax, Psat };
+  return { Amax: Amax * yScale, Psat: Psat * xScale };
 }
 
 // ---------- signal processing helpers ----------
@@ -826,6 +841,7 @@ export default function THzAnalyzer() {
   const powerChartWrapRef = useRef(null);
 
   const [powerXUnit, setPowerXUnit] = useState('mW'); // 'mW' | 'fluence'
+  const [showPowerFit, setShowPowerFit] = useState(true); // show/hide saturation-fit curves and Psat labels
   const [laserRepRate, setLaserRepRate] = useState(80); // MHz
   const [laserPulseDuration, setLaserPulseDuration] = useState(100); // fs (not used in fluence itself — reserved for a future intensity mode)
   const [laserSpotDiameter, setLaserSpotDiameter] = useState(2); // um
@@ -1461,7 +1477,7 @@ export default function THzAnalyzer() {
       powerDependence: {
         numPowers, numPowerDatasets,
         datasets: powerDatasets.map((ds) => ({ name: ds.name, color: ds.color, marker: ds.marker, rows: ds.rows })),
-        powerXUnit, laserRepRate, laserPulseDuration, laserSpotDiameter,
+        powerXUnit, showPowerFit, laserRepRate, laserPulseDuration, laserSpotDiameter,
       },
       convolution: convCards.map((c) => {
         const resolveRef = (id) => {
@@ -1532,6 +1548,7 @@ export default function THzAnalyzer() {
             rows: Array.isArray(ds.rows) ? ds.rows : makeEmptyRows(rowCount),
           })));
           if (pd.powerXUnit === 'fluence' || pd.powerXUnit === 'mW') setPowerXUnit(pd.powerXUnit);
+          setShowPowerFit(pd.showPowerFit !== false); // older sessions lack the field → default to shown
           if (typeof pd.laserRepRate === 'number') setLaserRepRate(pd.laserRepRate);
           if (typeof pd.laserPulseDuration === 'number') setLaserPulseDuration(pd.laserPulseDuration);
           if (typeof pd.laserSpotDiameter === 'number') setLaserSpotDiameter(pd.laserSpotDiameter);
@@ -1708,7 +1725,9 @@ export default function THzAnalyzer() {
     const unit = powerXUnit === 'fluence' ? 'mJ/cm2' : 'mW';
     return {
       color: pd.color,
-      parts: pd.fit
+      parts: !showPowerFit
+        ? [{ text: pd.name }]
+        : pd.fit
         ? [{ text: `${pd.name} (${symbol}` }, { text: 'sat', dy: 3, fontSize: 8 }, { text: ` = ${roundDisp(pd.fit.Psat)} ${unit})`, dy: -3 }]
         : [{ text: `${pd.name} (fit unavailable)` }],
     };
@@ -2384,6 +2403,10 @@ export default function THzAnalyzer() {
                 Fluence (mJ/cm²)
               </label>
             </div>
+            <label className="flex items-center gap-1.5 text-xs text-slate-900 pt-1 border-t border-slate-300">
+              <input type="checkbox" checked={showPowerFit} onChange={(e) => setShowPowerFit(e.target.checked)} className="accent-slate-700" />
+              Show saturation fit (A = A<sub>max</sub>·P / (P + P<sub>sat</sub>))
+            </label>
             <p className="text-xs text-slate-600">Laser specs (used for the fluence conversion):</p>
             <div className="grid grid-cols-1 gap-2 text-xs">
               <label className="flex items-center justify-between gap-2">
@@ -2624,7 +2647,7 @@ export default function THzAnalyzer() {
                       {powerPlotData && powerPlotData.map((pd) => (
                         <Scatter key={`${pd.id}-pts`} data={pd.points} fill={pd.color} shape={pd.marker} name={pd.name} line={false} isAnimationActive={false} />
                       ))}
-                      {powerPlotData && powerPlotData.filter((pd) => pd.fit).map((pd) => (
+                      {showPowerFit && powerPlotData && powerPlotData.filter((pd) => pd.fit).map((pd) => (
                         <Line key={`${pd.id}-fit`} data={pd.fitLine} dataKey="y" stroke={pd.color} strokeDasharray="5 4" strokeWidth={1.5} dot={false} isAnimationActive={false} legendType="none" />
                       ))}
                     </ComposedChart>
@@ -2635,9 +2658,9 @@ export default function THzAnalyzer() {
                     <span key={pd.id} className="inline-flex items-center gap-1.5">
                       <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: pd.color }} />
                       {pd.name}
-                      <span className="text-slate-500">
+                      {showPowerFit && <span className="text-slate-500">
                         {pd.fit ? <>({powerXUnit === 'fluence' ? 'F' : 'P'}<sub>sat</sub> = {roundDisp(pd.fit.Psat)} {powerXUnit === 'fluence' ? 'mJ/cm²' : 'mW'})</> : '(fit unavailable)'}
-                      </span>
+                      </span>}
                     </span>
                   ))}
                 </div>
