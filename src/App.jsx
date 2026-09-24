@@ -759,6 +759,46 @@ function exportCsvGrid(header, xGrid, seriesList, filename) {
   saveFile(new Blob([csv], { type: 'text/csv;charset=utf-8' }), filename, 'CSV file', 'text/csv', ['.csv']);
 }
 
+// ---------- amplitude display units ----------
+// Raw amplitudes are kept exactly as loaded; the selected unit is applied only for display
+// and export. Scaling assumes the raw data are in volts (typical lock-in output), so
+// mV = x1e3 and uV = x1e6. 'none' shows the raw arbitrary-unit values.
+const AMP_UNITS = {
+  none: { factor: 1, label: 'a.u.', option: 'No scaling (a.u.)' },
+  mV: { factor: 1e3, label: 'mV', option: 'mV (×10³)' },
+  uV: { factor: 1e6, label: 'µV', option: 'µV (×10⁶)' },
+};
+const ampFactorOf = (unit) => (AMP_UNITS[unit] || AMP_UNITS.none).factor;
+
+// 6 significant figures; plain notation for ordinary magnitudes, scientific otherwise.
+function formatSig6(x) {
+  if (typeof x !== 'number' || !Number.isFinite(x)) return '—';
+  if (x === 0) return '0';
+  const a = Math.abs(x);
+  return a >= 1e-3 && a < 1e6 ? String(Number(x.toPrecision(6))) : x.toExponential(5);
+}
+// Formats a raw amplitude in the selected display unit.
+const formatAmp = (raw, unit) => formatSig6(typeof raw === 'number' ? raw * ampFactorOf(unit) : raw);
+
+// Axis tick labels: raw data keep the original scientific format; scaled units get
+// just enough decimals to distinguish adjacent ticks.
+function makeAmpTickFormatter(unit, ticks) {
+  const factor = ampFactorOf(unit);
+  if (factor === 1) return (v) => (v === 0 ? '0.00e+0' : v.toExponential(2));
+  const step = Array.isArray(ticks) && ticks.length >= 2 ? Math.abs(ticks[1] - ticks[0]) * factor : 0;
+  const decimals = step > 0 ? Math.min(6, Math.max(0, Math.ceil(-Math.log10(step) - 1e-9))) : 2;
+  return (v) => (v * factor).toFixed(decimals);
+}
+
+// Converts a typed numeric string by a ratio (Power Fit table), leaving blanks and
+// in-progress entries untouched and avoiding float noise like 123.39999999999999.
+function scaleNumericString(str, ratio) {
+  if (typeof str !== 'string' || str.trim() === '') return str;
+  const n = Number(str);
+  if (!Number.isFinite(n)) return str;
+  return String(Number((n * ratio).toPrecision(12)));
+}
+
 // ---------- Tab 4: time-domain waveform arithmetic helpers ----------
 
 const ARITH_OPS = [
@@ -847,6 +887,10 @@ export default function THzAnalyzer() {
   const [windowType, setWindowType] = useState('none');
   const [zeroPadFactor, setZeroPadFactor] = useState(1);
   const [timeUnit, setTimeUnit] = useState('ps');
+  // Amplitude display unit, applied app-wide (all tabs, tables, axes, tooltips, exports).
+  const [ampUnit, setAmpUnit] = useState('none'); // 'none' | 'mV' | 'uV'
+  const ampFactor = ampFactorOf(ampUnit);
+  const ampLabel = (AMP_UNITS[ampUnit] || AMP_UNITS.none).label;
 
   const [noiseRegion, setNoiseRegion] = useState('end');
   const [noiseFraction, setNoiseFraction] = useState(0.2);
@@ -900,6 +944,18 @@ export default function THzAnalyzer() {
 
   // --- Tab 2: power dependence ---
   const makeEmptyRows = (n) => Array.from({ length: n }, () => ({ power: '', min: '', max: '' }));
+
+  // Switching the amplitude unit also converts the Power Fit min/max entries, which are typed
+  // (or copied from snapshots) in the unit on screen, so table, plot, and fit stay consistent.
+  const changeAmpUnit = (next) => {
+    if (!AMP_UNITS[next] || next === ampUnit) return;
+    const ratio = ampFactorOf(next) / ampFactorOf(ampUnit);
+    setPowerDatasets((prev) => prev.map((ds) => ({
+      ...ds,
+      rows: ds.rows.map((r) => ({ ...r, min: scaleNumericString(r.min, ratio), max: scaleNumericString(r.max, ratio) })),
+    })));
+    setAmpUnit(next);
+  };
   const makePowerDataset = (idx, rowCount) => ({
     id: `pd_${Date.now()}_${idx}_${Math.random().toString(36).slice(2)}`,
     name: `Dataset ${idx + 1}`,
@@ -996,7 +1052,7 @@ export default function THzAnalyzer() {
       if (!Number.isFinite(mw) || !Number.isFinite(rep) || !Number.isFinite(dia) || rep <= 0 || dia <= 0) return NaN;
       return (400 * mw) / (Math.PI * rep * dia * dia);
     };
-    const header = ['Power (mW)', 'Fluence (mJ/cm2)', ...powerDatasets.map((d) => `${d.name} (peak-to-peak)`)];
+    const header = ['Power (mW)', 'Fluence (mJ/cm2)', ...powerDatasets.map((d) => `${d.name} (peak-to-peak, ${ampLabel})`)];
     const rows = [];
     for (let i = 0; i < numPowers; i++) {
       const refRow = powerDatasets[0] && powerDatasets[0].rows[i];
@@ -1517,17 +1573,17 @@ export default function THzAnalyzer() {
 
   const exportArithCsv = (r) => {
     if (!r || !r.time) { addError('Nothing to export for this card yet.'); return; }
-    const header = [`Time (${timeUnit})`, `${r.name}`];
+    const header = [`Time (${timeUnit})`, `${r.name} (${ampLabel})`];
     const extra = [];
     if (r.operation !== 'none') {
-      header.push(`A: ${r.sourceAName}`);
+      header.push(`A: ${r.sourceAName} (${ampLabel})`);
       extra.push(interpolateSeries(r.inputs[0].xs, r.inputs[0].ys, r.time));
     }
-    if (arithNeedsB(r.operation)) { header.push(`B: ${r.sourceBName} (on result time grid)`); extra.push(r.inputs[1].ys); }
+    if (arithNeedsB(r.operation)) { header.push(`B: ${r.sourceBName} (${ampLabel}, on result time grid)`); extra.push(r.inputs[1].ys); }
     const rows = [header];
     for (let i = 0; i < r.time.length; i++) {
-      const row = [roundSig(r.time[i]), roundSig(r.amplitude[i])];
-      extra.forEach((col) => row.push(typeof col[i] === 'number' ? roundSig(col[i]) : ''));
+      const row = [roundSig(r.time[i]), roundSig(r.amplitude[i] * ampFactor)];
+      extra.forEach((col) => row.push(typeof col[i] === 'number' ? roundSig(col[i] * ampFactor) : ''));
       rows.push(row);
     }
     const safeName = (r.name || 'waveform').replace(/[^a-z0-9_-]+/gi, '_');
@@ -1562,9 +1618,9 @@ export default function THzAnalyzer() {
     const hi = Math.max(...arithCompareEntries.map((e) => e.time[e.time.length - 1]));
     const count = Math.min(20000, Math.max(...arithCompareEntries.map((e) => e.time.length)));
     exportCsvGrid(
-      [`Time (${timeUnit})`, ...arithCompareEntries.map((e) => e.name)],
+      [`Time (${timeUnit})`, ...arithCompareEntries.map((e) => `${e.name} (${ampLabel})`)],
       buildLinGrid(lo, hi, count),
-      arithCompareEntries.map((e) => ({ xs: e.time, ys: e.amplitude })),
+      arithCompareEntries.map((e) => ({ xs: e.time, ys: ampFactor === 1 ? e.amplitude : e.amplitude.map((v) => v * ampFactor) })),
       'thz_waveform_compare.csv',
     );
   };
@@ -1659,8 +1715,8 @@ export default function THzAnalyzer() {
     let count = Math.round((hi - lo) / minDt) + 1;
     count = Math.min(Math.max(count, 2), 20000);
     const xGrid = buildLinGrid(lo, hi, count);
-    const header = [`Time (${timeUnit})`, ...datasets.map((d) => d.name)];
-    const seriesList = datasets.map((d) => ({ xs: d.time, ys: d.amplitude }));
+    const header = [`Time (${timeUnit})`, ...datasets.map((d) => `${d.name} (${ampLabel})`)];
+    const seriesList = datasets.map((d) => ({ xs: d.time, ys: ampFactor === 1 ? d.amplitude : d.amplitude.map((v) => v * ampFactor) }));
     exportCsvGrid(header, xGrid, seriesList, 'thz_tds_data.csv');
   };
 
@@ -1686,7 +1742,7 @@ export default function THzAnalyzer() {
         name: d.name, color: d.color, visible: d.visible, width: d.width, time: d.time, amplitude: d.amplitude,
       })),
       settings: {
-        windowType, zeroPadFactor, timeUnit, noiseRegion, noiseFraction, bandwidthMode, marginDB, displayMode, showWaterVapor,
+        windowType, zeroPadFactor, timeUnit, ampUnit, noiseRegion, noiseFraction, bandwidthMode, marginDB, displayMode, showWaterVapor,
         timeDomain, timeYDomain, freqDomain, freqYDomain,
       },
       snapshots,
@@ -1749,6 +1805,8 @@ export default function THzAnalyzer() {
         if (s.windowType) setWindowType(s.windowType);
         if (s.zeroPadFactor) setZeroPadFactor(s.zeroPadFactor);
         if (s.timeUnit) setTimeUnit(s.timeUnit);
+        // Set directly (no conversion): saved Power Fit rows are already in the saved unit.
+        setAmpUnit(AMP_UNITS[s.ampUnit] ? s.ampUnit : 'none');
         if (s.noiseRegion) setNoiseRegion(s.noiseRegion);
         if (typeof s.noiseFraction === 'number') setNoiseFraction(s.noiseFraction);
         if (s.bandwidthMode) setBandwidthMode(s.bandwidthMode);
@@ -2188,6 +2246,12 @@ export default function THzAnalyzer() {
                   <option value="s">s</option>
                 </select>
               </label>
+              <label className="flex items-center justify-between gap-2" title="Display unit for THz amplitudes in every tab. Assumes the loaded data are in volts.">
+                <span className="text-slate-900">Amplitude unit</span>
+                <select value={ampUnit} onChange={(e) => changeAmpUnit(e.target.value)} className="bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800">
+                  {Object.entries(AMP_UNITS).map(([k, u]) => <option key={k} value={k}>{u.option}</option>)}
+                </select>
+              </label>
               <label className="flex items-center justify-between gap-2">
                 <span className="text-slate-900">Window</span>
                 <select value={windowType} onChange={(e) => setWindowType(e.target.value)} className="bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800">
@@ -2380,9 +2444,9 @@ export default function THzAnalyzer() {
                   <XAxis dataKey="x" type="number" domain={validDomain(timeDomain) || timeFullDomain} ticks={timeXTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }}
                     label={{ value: `Time (${timeUnit})`, position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
                   <YAxis domain={validDomain(timeYDomain) || timeYFullDomain} ticks={timeYTicks} allowDataOverflow stroke="#334155" tick={{ fontSize: 11 }} width={72}
-                    tickFormatter={(v) => (v === 0 ? '0.00e+0' : v.toExponential(2))}
-                    label={{ value: 'E-field (a.u.)', angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
-                  <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => fmtTip(v, 'sci')} labelFormatter={(l) => fmtTipLabel(l, timeUnit)} />
+                    tickFormatter={makeAmpTickFormatter(ampUnit, timeYTicks)}
+                    label={{ value: `E-field (${ampLabel})`, angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
+                  <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => formatAmp(v, ampUnit)} labelFormatter={(l) => fmtTipLabel(l, timeUnit)} />
                   <Legend verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: 11, paddingTop: 20 }} />
                   <Customized component={ChartBorder} />
                   {visible.map((d) => (
@@ -2418,18 +2482,18 @@ export default function THzAnalyzer() {
                 />
               </label>
               <label className="space-y-1">
-                <span className="text-slate-900 block">Y min (a.u.)</span>
+                <span className="text-slate-900 block">Y min ({ampLabel})</span>
                 <NumberRangeField
-                  value={roundDisp((validDomain(timeYDomain) || timeYFullDomain)[0])}
-                  onCommit={(v) => setTimeYDomain([v, (validDomain(timeYDomain) || timeYFullDomain)[1]])}
+                  value={roundDisp((validDomain(timeYDomain) || timeYFullDomain)[0] * ampFactor)}
+                  onCommit={(v) => setTimeYDomain([v / ampFactor, (validDomain(timeYDomain) || timeYFullDomain)[1]])}
                   className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
                 />
               </label>
               <label className="space-y-1">
-                <span className="text-slate-900 block">Y max (a.u.)</span>
+                <span className="text-slate-900 block">Y max ({ampLabel})</span>
                 <NumberRangeField
-                  value={roundDisp((validDomain(timeYDomain) || timeYFullDomain)[1])}
-                  onCommit={(v) => setTimeYDomain([(validDomain(timeYDomain) || timeYFullDomain)[0], v])}
+                  value={roundDisp((validDomain(timeYDomain) || timeYFullDomain)[1] * ampFactor)}
+                  onCommit={(v) => setTimeYDomain([(validDomain(timeYDomain) || timeYFullDomain)[0], v / ampFactor])}
                   className="w-full bg-white border border-slate-500 rounded px-1.5 py-1 text-slate-800"
                 />
               </label>
@@ -2463,7 +2527,7 @@ export default function THzAnalyzer() {
                         <th key={c.id} className="text-right font-normal py-2 pr-4">
                           <span className="inline-flex items-center gap-1.5">
                             <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: c.color }} />
-                            {c.name}
+                            {c.name} <span className="text-slate-400">({ampLabel})</span>
                           </span>
                         </th>
                       ))}
@@ -2479,7 +2543,7 @@ export default function THzAnalyzer() {
                           const en = s.entries.find((e) => e.id === c.id);
                           return (
                             <td key={c.id} className="text-right pr-4 font-mono">
-                              {en && en.value != null ? fmt(en.value, 6) : '—'}
+                              {en && en.value != null ? formatAmp(en.value, ampUnit) : '—'}
                             </td>
                           );
                         })}
@@ -2613,7 +2677,7 @@ export default function THzAnalyzer() {
                 <thead>
                   <tr className="text-slate-600 border-b border-slate-400">
                     <th className="text-left font-normal py-2 pr-4">Dataset</th>
-                    <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-slate-900" onClick={() => toggleSort('peakToPeak')}>Peak-to-peak (a.u.){sortArrow('peakToPeak')}</th>
+                    <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-slate-900" onClick={() => toggleSort('peakToPeak')}>Peak-to-peak ({ampLabel}){sortArrow('peakToPeak')}</th>
                     <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-slate-900" onClick={() => toggleSort('peakFreq')}>Peak (THz){sortArrow('peakFreq')}</th>
                     <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-slate-900" onClick={() => toggleSort('bwWidth')}>Bandwidth{sortArrow('bwWidth')}</th>
                     <th className="text-right font-normal py-2 pr-4 cursor-pointer select-none hover:text-slate-900" onClick={() => toggleSort('noiseFloorDB')}>Noise floor (dB){sortArrow('noiseFloorDB')}</th>
@@ -2627,7 +2691,7 @@ export default function THzAnalyzer() {
                         <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: d.color }} />
                         {d.name}
                       </td>
-                      <td className="text-right pr-4 font-mono">{fmt(d.peakToPeak, 4)}</td>
+                      <td className="text-right pr-4 font-mono">{formatAmp(d.peakToPeak, ampUnit)}</td>
                       <td className="text-right pr-4 font-mono">{fmt(d.peakFreq)}</td>
                       <td className="text-right pr-4 font-mono">{fmt(d.bw.lo)}–{fmt(d.bw.hi)} ({fmt(d.bw.width)})</td>
                       <td className="text-right pr-4 font-mono">{fmt(d.noiseFloorDB, 1)}</td>
@@ -2770,7 +2834,7 @@ export default function THzAnalyzer() {
                         <th key={c.id} className="text-right font-normal py-1 pr-2">
                           <span className="inline-flex items-center gap-1">
                             <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: c.color }} />
-                            {c.name}
+                            {c.name} <span className="text-slate-400">({ampLabel})</span>
                           </span>
                         </th>
                       ))}
@@ -2783,7 +2847,7 @@ export default function THzAnalyzer() {
                         <td className="text-right pr-2 font-mono">{fmt(s.time, 4)}</td>
                         {snapshotColumns.map((c) => {
                           const en = s.entries.find((e) => e.id === c.id);
-                          return <td key={c.id} className="text-right pr-2 font-mono">{en && en.value != null ? fmt(en.value, 6) : '—'}</td>;
+                          return <td key={c.id} className="text-right pr-2 font-mono">{en && en.value != null ? formatAmp(en.value, ampUnit) : '—'}</td>;
                         })}
                       </tr>
                     ))}
@@ -2794,7 +2858,9 @@ export default function THzAnalyzer() {
           </div>
 
           <div className="flex items-center justify-between">
-            <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Data tables</p>
+            <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">
+              Data tables <span className="normal-case tracking-normal text-slate-500">· amplitudes in {ampLabel} (set in TDS &amp; FFT; changing the unit converts these values)</span>
+            </p>
             <button
               onClick={exportPowerDependenceCsv}
               className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition bg-white"
@@ -2822,9 +2888,9 @@ export default function THzAnalyzer() {
                 <thead>
                   <tr className="text-slate-600 border-b border-slate-400">
                     <th className="text-right font-normal py-1.5 pr-4">Power (mW)</th>
-                    <th className="text-right font-normal py-1.5 pr-4">Min amplitude</th>
-                    <th className="text-right font-normal py-1.5 pr-4">Max amplitude</th>
-                    <th className="text-right font-normal py-1.5">Peak-to-peak</th>
+                    <th className="text-right font-normal py-1.5 pr-4">Min amplitude ({ampLabel})</th>
+                    <th className="text-right font-normal py-1.5 pr-4">Max amplitude ({ampLabel})</th>
+                    <th className="text-right font-normal py-1.5">Peak-to-peak ({ampLabel})</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2860,7 +2926,7 @@ export default function THzAnalyzer() {
                             placeholder="insert value"
                           />
                         </td>
-                        <td className="text-right font-mono text-xs text-slate-700">{p2p != null ? p2p.toPrecision(6) : '—'}</td>
+                        <td className="text-right font-mono text-xs text-slate-700">{p2p != null ? formatSig6(p2p) : '—'}</td>
                       </tr>
                     );
                   })}
@@ -2896,8 +2962,8 @@ export default function THzAnalyzer() {
                       <XAxis dataKey="x" type="number" domain={[0, powerXTicks.length ? powerXTicks[powerXTicks.length - 1] : 'auto']} ticks={powerXTicks} tickFormatter={(v) => (powerXUnit === 'fluence' ? v.toFixed(2) : Math.round(v))} stroke="#334155" tick={{ fontSize: 11 }}
                         label={{ value: powerXUnit === 'fluence' ? 'Fluence (mJ/cm²)' : 'Power (mW)', position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
                       <YAxis dataKey="y" type="number" stroke="#334155" tick={{ fontSize: 11 }}
-                        label={{ value: 'Peak-to-peak amplitude (a.u.)', angle: -90, position: 'center', dx: -35, fill: '#334155', fontSize: 11 }} />
-                      <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => fmtTip(v, 'auto')} labelFormatter={(l) => fmtTipLabel(l, powerXUnit === 'fluence' ? 'mJ/cm²' : 'mW', 2)} />
+                        label={{ value: `Peak-to-peak amplitude (${ampLabel})`, angle: -90, position: 'center', dx: -35, fill: '#334155', fontSize: 11 }} />
+                      <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => formatSig6(v)} labelFormatter={(l) => fmtTipLabel(l, powerXUnit === 'fluence' ? 'mJ/cm²' : 'mW', 2)} />
                       <Customized component={ChartBorder} />
                       {powerPlotData && powerPlotData.map((pd) => (
                         <Scatter key={`${pd.id}-pts`} data={pd.points} fill={pd.color} shape={pd.marker} name={pd.name} line={false} isAnimationActive={false} />
@@ -3418,18 +3484,18 @@ export default function THzAnalyzer() {
                       />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-slate-900 block">Y min (a.u.)</span>
+                      <span className="text-slate-900 block">Y min ({ampLabel})</span>
                       <NumberRangeField
-                        value={roundDisp(yDomainEff[0])}
-                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [card.id]: [v, yDomainEff[1]] }))}
+                        value={roundDisp(yDomainEff[0] * ampFactor)}
+                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [card.id]: [v / ampFactor, yDomainEff[1]] }))}
                         className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
                       />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-slate-900 block">Y max (a.u.)</span>
+                      <span className="text-slate-900 block">Y max ({ampLabel})</span>
                       <NumberRangeField
-                        value={roundDisp(yDomainEff[1])}
-                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [card.id]: [yDomainEff[0], v] }))}
+                        value={roundDisp(yDomainEff[1] * ampFactor)}
+                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [card.id]: [yDomainEff[0], v / ampFactor] }))}
                         className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
                       />
                     </label>
@@ -3489,9 +3555,9 @@ export default function THzAnalyzer() {
                         <XAxis dataKey="x" type="number" domain={xDomainEff} allowDataOverflow ticks={niceTicks(xDomainEff[0], xDomainEff[1])} stroke="#334155" tick={{ fontSize: 11 }}
                           label={{ value: `Time (${timeUnit})`, position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
                         <YAxis domain={yDomainEff} allowDataOverflow ticks={niceTicks(yDomainEff[0], yDomainEff[1])} stroke="#334155" tick={{ fontSize: 11 }} width={72}
-                          tickFormatter={(v) => (v === 0 ? '0.00e+0' : v.toExponential(2))}
-                          label={{ value: 'E-field (a.u.)', angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
-                        <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => fmtTip(v, 'sci')} labelFormatter={(l) => fmtTipLabel(l, timeUnit)} />
+                          tickFormatter={makeAmpTickFormatter(ampUnit, niceTicks(yDomainEff[0], yDomainEff[1]))}
+                          label={{ value: `E-field (${ampLabel})`, angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
+                        <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => formatAmp(v, ampUnit)} labelFormatter={(l) => fmtTipLabel(l, timeUnit)} />
                         <Customized component={ChartBorder} />
                         <ReferenceLine y={0} stroke="#94a3b8" strokeWidth={1} />
                         {mode === 'zoom' && sel.x1 != null && sel.x2 != null && (
@@ -3567,18 +3633,18 @@ export default function THzAnalyzer() {
                       />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-slate-900 block">Y min (a.u.)</span>
+                      <span className="text-slate-900 block">Y min ({ampLabel})</span>
                       <NumberRangeField
-                        value={roundDisp(cmpY[0])}
-                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [ARITH_COMPARE_ID]: [v, cmpY[1]] }))}
+                        value={roundDisp(cmpY[0] * ampFactor)}
+                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [ARITH_COMPARE_ID]: [v / ampFactor, cmpY[1]] }))}
                         className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
                       />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-slate-900 block">Y max (a.u.)</span>
+                      <span className="text-slate-900 block">Y max ({ampLabel})</span>
                       <NumberRangeField
-                        value={roundDisp(cmpY[1])}
-                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [ARITH_COMPARE_ID]: [cmpY[0], v] }))}
+                        value={roundDisp(cmpY[1] * ampFactor)}
+                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [ARITH_COMPARE_ID]: [cmpY[0], v / ampFactor] }))}
                         className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
                       />
                     </label>
@@ -3631,9 +3697,9 @@ export default function THzAnalyzer() {
                         <XAxis dataKey="x" type="number" domain={cmpX} allowDataOverflow ticks={niceTicks(cmpX[0], cmpX[1])} stroke="#334155" tick={{ fontSize: 11 }}
                           label={{ value: `Time (${timeUnit})`, position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
                         <YAxis domain={cmpY} allowDataOverflow ticks={niceTicks(cmpY[0], cmpY[1])} stroke="#334155" tick={{ fontSize: 11 }} width={72}
-                          tickFormatter={(v) => (v === 0 ? '0.00e+0' : v.toExponential(2))}
-                          label={{ value: 'E-field (a.u.)', angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
-                        <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => fmtTip(v, 'sci')} labelFormatter={(l) => fmtTipLabel(l, timeUnit)} />
+                          tickFormatter={makeAmpTickFormatter(ampUnit, niceTicks(cmpY[0], cmpY[1]))}
+                          label={{ value: `E-field (${ampLabel})`, angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
+                        <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => formatAmp(v, ampUnit)} labelFormatter={(l) => fmtTipLabel(l, timeUnit)} />
                         <Legend verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: 11, paddingTop: 20 }} />
                         <Customized component={ChartBorder} />
                         <ReferenceLine y={0} stroke="#94a3b8" strokeWidth={1} />
