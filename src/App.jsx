@@ -5,7 +5,7 @@ import * as math from 'mathjs';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea, ReferenceLine, Customized, ComposedChart, Scatter,
 } from 'recharts';
-import { Upload, Trash2, Eye, EyeOff, Sparkles, X, Download, ZoomIn, Move, RotateCcw, Pencil, Camera, GripVertical } from 'lucide-react';
+import { Upload, Trash2, Eye, EyeOff, Sparkles, X, Download, ZoomIn, Move, RotateCcw, Pencil, Camera, GripVertical, Send, Check } from 'lucide-react';
 
 const COLORS = ['#0d9488', '#d97706', '#db2777', '#4f46e5', '#65a30d', '#ea580c', '#0284c7', '#dc2626'];
 
@@ -759,6 +759,79 @@ function exportCsvGrid(header, xGrid, seriesList, filename) {
   saveFile(new Blob([csv], { type: 'text/csv;charset=utf-8' }), filename, 'CSV file', 'text/csv', ['.csv']);
 }
 
+// ---------- Tab 4: time-domain waveform arithmetic helpers ----------
+
+const ARITH_OPS = [
+  { value: 'none', label: 'As is (A)', symbol: '' },
+  { value: 'flip', label: 'Flip (−A)', symbol: '−' },
+  { value: 'add', label: 'Add (A + B)', symbol: '+' },
+  { value: 'subtract', label: 'Subtract (A − B)', symbol: '−' },
+];
+const arithNeedsB = (op) => op === 'add' || op === 'subtract';
+// Muted colors for the dashed input-waveform overlays (A, B), so the result line stays dominant.
+const INPUT_COLORS = ['#64748b', '#b45309'];
+
+// Returns the trace with time ascending (interpolation below assumes it).
+function ascendingTrace(time, amplitude) {
+  if (time.length < 2 || time[time.length - 1] >= time[0]) return { time, amplitude };
+  return { time: time.slice().reverse(), amplitude: amplitude.slice().reverse() };
+}
+
+// Applies a time-domain operation to waveform A (and B for add/subtract).
+// For add/subtract, B is linearly interpolated onto A's time samples and the result is limited
+// to the time range where both traces exist, so traces with different step sizes or scan
+// windows can still be combined. `notes` records any resampling/trimming so the UI can say so.
+function combineWaveforms(op, a, b) {
+  const A = ascendingTrace(a.time, a.amplitude);
+  if (op === 'none') return { time: A.time, amplitude: A.amplitude.slice(), notes: [] };
+  if (op === 'flip') return { time: A.time, amplitude: A.amplitude.map((v) => -v), notes: [] };
+  if (!b) return { error: 'Select Dataset B.' };
+
+  const B = ascendingTrace(b.time, b.amplitude);
+  const sign = op === 'subtract' ? -1 : 1;
+  const notes = [];
+
+  const sameGrid = A.time.length === B.time.length && A.time.every((t, i) => {
+    const tol = 1e-9 * Math.max(Math.abs(t), Math.abs(A.time[A.time.length - 1] - A.time[0]), 1e-30);
+    return Math.abs(t - B.time[i]) <= tol;
+  });
+  if (sameGrid) {
+    return { time: A.time, amplitude: A.amplitude.map((v, i) => v + sign * B.amplitude[i]), bOnGrid: B.amplitude, notes };
+  }
+
+  const bOnA = interpolateSeries(B.time, B.amplitude, A.time);
+  const time = [];
+  const amplitude = [];
+  const bOnGrid = [];
+  for (let i = 0; i < A.time.length; i++) {
+    if (typeof bOnA[i] !== 'number') continue;
+    time.push(A.time[i]);
+    amplitude.push(A.amplitude[i] + sign * bOnA[i]);
+    bOnGrid.push(bOnA[i]);
+  }
+  if (time.length < 2) return { error: 'Datasets A and B do not overlap in time.' };
+  notes.push("B was resampled onto A's time points (linear interpolation).");
+  if (time.length < A.time.length) {
+    notes.push(`Result limited to the overlapping time range ${roundSig(time[0], 4)} to ${roundSig(time[time.length - 1], 4)}.`);
+  }
+  return { time, amplitude, bOnGrid, notes };
+}
+
+function downsampleXY(xs, ys, maxPoints = 1500) {
+  const stride = Math.max(1, Math.floor(xs.length / maxPoints));
+  const out = [];
+  for (let i = 0; i < xs.length; i += stride) out.push({ x: xs[i], y: ys[i] });
+  return out;
+}
+
+function paddedRange(seriesList) {
+  let lo = Infinity, hi = -Infinity;
+  seriesList.forEach((ys) => ys.forEach((v) => { if (v < lo) lo = v; if (v > hi) hi = v; }));
+  if (!Number.isFinite(lo)) return [-1, 1];
+  const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.1 || 1;
+  return [lo - pad, hi + pad];
+}
+
 // ---------- UI ----------
 
 export default function THzAnalyzer() {
@@ -1353,6 +1426,149 @@ export default function THzAnalyzer() {
     comparePanRef.current.dragging = false;
   };
 
+  // --- Tab 4: time-domain waveform arithmetic ---
+  // Cards reuse Tab 3's id-keyed zoom/pan machinery (convXDomains, handleConvMouse*, etc.),
+  // which works for any chart id; Tab 4 ids are prefixed 'arith_' so they never collide.
+  const [arithCards, setArithCards] = useState([]); // [{ id, name, operation, sourceAId, sourceBId, color, showInputs }]
+  const [arithCompareIds, setArithCompareIds] = useState([]);
+  const [arithSentIds, setArithSentIds] = useState([]); // brief "Sent" confirmation on the Send-to-Tab-1 button
+  const ARITH_COMPARE_ID = 'arith__compare';
+
+  const addArithCard = () => {
+    setArithCards((prev) => [...prev, {
+      id: `arith_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      name: `Waveform ${prev.length + 1}`,
+      operation: 'subtract',
+      sourceAId: '',
+      sourceBId: '',
+      color: COLORS[prev.length % COLORS.length],
+      showInputs: true,
+    }]);
+  };
+  const removeArithCard = (id) => {
+    delete convChartRefsRef.current[id];
+    delete convPanRefsRef.current[id];
+    delete convYScaleRefsRef.current[id];
+    setConvXDomains((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setConvYDomains((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setConvModes((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setConvSels((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    setArithCompareIds((prev) => prev.filter((x) => x !== id));
+    setArithCards((prev) => prev.filter((c) => c.id !== id));
+  };
+  const updateArithCard = (id, patch) => setArithCards((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+
+  const arithSourceOptions = (cardIndex) => [
+    ...datasets.map((d) => ({ id: d.id, name: d.name, group: 'Loaded data' })),
+    ...arithCards.slice(0, cardIndex).map((c) => ({ id: c.id, name: c.name, group: 'Previous results' })),
+  ];
+
+  const arithResults = useMemo(() => {
+    const resolved = [];
+    const resolveSource = (id) => {
+      if (!id) return null;
+      const ds = datasets.find((d) => d.id === id);
+      if (ds) return { time: ds.time, amplitude: ds.amplitude, name: ds.name };
+      const prev = resolved.find((r) => r.id === id);
+      if (prev && prev.time) return { time: prev.time, amplitude: prev.amplitude, name: prev.name };
+      return null;
+    };
+    arithCards.forEach((card) => {
+      const needsB = arithNeedsB(card.operation);
+      if (!card.sourceAId || (needsB && !card.sourceBId)) {
+        resolved.push({ ...card, time: null, error: needsB ? 'Select both Dataset A and Dataset B.' : 'Select Dataset A.' });
+        return;
+      }
+      const a = resolveSource(card.sourceAId);
+      const b = needsB ? resolveSource(card.sourceBId) : null;
+      if (!a || (needsB && !b)) {
+        resolved.push({ ...card, time: null, error: 'A source dataset is missing or has an error — reselect.' });
+        return;
+      }
+      const out = combineWaveforms(card.operation, a, b);
+      if (out.error) { resolved.push({ ...card, time: null, error: out.error }); return; }
+
+      const aAsc = ascendingTrace(a.time, a.amplitude);
+      const inputSeries = [{ key: 'A', name: `A: ${a.name}`, xs: aAsc.time, ys: aAsc.amplitude }];
+      if (needsB) inputSeries.push({ key: 'B', name: `B: ${b.name}`, xs: out.time, ys: out.bOnGrid });
+      resolved.push({
+        ...card,
+        time: out.time, amplitude: out.amplitude, notes: out.notes,
+        chartData: downsampleXY(out.time, out.amplitude),
+        inputs: inputSeries.map((sr) => ({ ...sr, chartData: downsampleXY(sr.xs, sr.ys) })),
+        sourceAName: a.name, sourceBName: b ? b.name : null,
+        error: null,
+      });
+    });
+    return resolved;
+  }, [arithCards, datasets]);
+
+  const arithColorFor = (id) => {
+    const idx = arithResults.findIndex((r) => r.id === id);
+    const card = idx !== -1 ? arithResults[idx] : null;
+    if (card && /^#[0-9a-fA-F]{6}$/.test(card.color)) return card.color;
+    return COLORS[Math.max(0, idx) % COLORS.length];
+  };
+  const arithFormula = (r) => {
+    if (r.operation === 'none') return r.sourceAName;
+    if (r.operation === 'flip') return `−(${r.sourceAName})`;
+    return `${r.sourceAName} ${r.operation === 'add' ? '+' : '−'} ${r.sourceBName}`;
+  };
+
+  const exportArithCsv = (r) => {
+    if (!r || !r.time) { addError('Nothing to export for this card yet.'); return; }
+    const header = [`Time (${timeUnit})`, `${r.name}`];
+    const extra = [];
+    if (r.operation !== 'none') {
+      header.push(`A: ${r.sourceAName}`);
+      extra.push(interpolateSeries(r.inputs[0].xs, r.inputs[0].ys, r.time));
+    }
+    if (arithNeedsB(r.operation)) { header.push(`B: ${r.sourceBName} (on result time grid)`); extra.push(r.inputs[1].ys); }
+    const rows = [header];
+    for (let i = 0; i < r.time.length; i++) {
+      const row = [roundSig(r.time[i]), roundSig(r.amplitude[i])];
+      extra.forEach((col) => row.push(typeof col[i] === 'number' ? roundSig(col[i]) : ''));
+      rows.push(row);
+    }
+    const safeName = (r.name || 'waveform').replace(/[^a-z0-9_-]+/gi, '_');
+    saveFile(new Blob([Papa.unparse(rows)], { type: 'text/csv;charset=utf-8' }), `${safeName}.csv`, 'CSV file', 'text/csv', ['.csv']);
+  };
+
+  // Copies a result into Tab 1 as a regular dataset, so it gets an FFT, metrics, snapshots, etc.
+  // It is a snapshot copy: later edits to the card do not update the sent dataset.
+  const sendArithToTab1 = (r) => {
+    if (!r || !r.time) return;
+    const color = arithColorFor(r.id);
+    setDatasets((prev) => {
+      const base = r.name || 'Waveform';
+      let name = base;
+      for (let n = 2; prev.some((d) => d.name === name); n++) name = `${base} (${n})`;
+      return [...prev, {
+        id: `arithds_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        name, color, visible: true, width: 1.4,
+        time: r.time.slice(), amplitude: r.amplitude.slice(),
+      }];
+    });
+    setArithSentIds((prev) => [...prev, r.id]);
+    setTimeout(() => setArithSentIds((prev) => prev.filter((x) => x !== r.id)), 1800);
+  };
+
+  const arithCompareEntries = arithResults.filter((r) => arithCompareIds.includes(r.id) && !r.error);
+  const toggleArithCompare = (id) => setArithCompareIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  const exportArithCompareCsv = () => {
+    if (!arithCompareEntries.length) { addError('Select at least one result to export.'); return; }
+    const lo = Math.min(...arithCompareEntries.map((e) => e.time[0]));
+    const hi = Math.max(...arithCompareEntries.map((e) => e.time[e.time.length - 1]));
+    const count = Math.min(20000, Math.max(...arithCompareEntries.map((e) => e.time.length)));
+    exportCsvGrid(
+      [`Time (${timeUnit})`, ...arithCompareEntries.map((e) => e.name)],
+      buildLinGrid(lo, hi, count),
+      arithCompareEntries.map((e) => ({ xs: e.time, ys: e.amplitude })),
+      'thz_waveform_compare.csv',
+    );
+  };
+
   const addError = (msg) => setErrors((prev) => [...prev, msg]);
   const dismissError = (i) => setErrors((prev) => prev.filter((_, idx) => idx !== i));
 
@@ -1492,6 +1708,19 @@ export default function THzAnalyzer() {
           sourceA: resolveRef(c.sourceAId), sourceB: resolveRef(c.sourceBId),
         };
       }),
+      arithmetic: arithCards.map((c) => {
+        const resolveRef = (id) => {
+          const dsIdx = datasets.findIndex((d) => d.id === id);
+          if (dsIdx !== -1) return { kind: 'dataset', index: dsIdx };
+          const cardIdx = arithCards.findIndex((cc) => cc.id === id);
+          if (cardIdx !== -1) return { kind: 'card', index: cardIdx };
+          return null;
+        };
+        return {
+          name: c.name, operation: c.operation, color: c.color, showInputs: c.showInputs !== false,
+          sourceA: resolveRef(c.sourceAId), sourceB: resolveRef(c.sourceBId),
+        };
+      }),
     };
     const json = JSON.stringify(session);
     saveFile(new Blob([json], { type: 'application/json' }), `${name}.json`, 'JSON session file', 'application/json', ['.json']);
@@ -1573,6 +1802,26 @@ export default function THzAnalyzer() {
             color: /^#[0-9a-fA-F]{6}$/.test(c.color) ? c.color : COLORS[i % COLORS.length],
           })));
         }
+
+        // Tab 4 cards (absent in older sessions → start empty).
+        const arith = Array.isArray(session.arithmetic) ? session.arithmetic : [];
+        const newArithIds = arith.map((_, i) => `arith_${Date.now()}_${i}_${Math.random().toString(36).slice(2)}`);
+        const resolveArithRef = (ref) => {
+          if (!ref) return '';
+          if (ref.kind === 'dataset') return (restored[ref.index] && restored[ref.index].id) || '';
+          if (ref.kind === 'card') return newArithIds[ref.index] || '';
+          return '';
+        };
+        setArithCompareIds([]);
+        setArithCards(arith.map((c, i) => ({
+          id: newArithIds[i],
+          name: c.name || `Waveform ${i + 1}`,
+          operation: ARITH_OPS.some((o) => o.value === c.operation) ? c.operation : 'none',
+          sourceAId: resolveArithRef(c.sourceA),
+          sourceBId: resolveArithRef(c.sourceB),
+          color: /^#[0-9a-fA-F]{6}$/.test(c.color) ? c.color : COLORS[i % COLORS.length],
+          showInputs: c.showInputs !== false,
+        })));
 
         const derivedName = (typeof session.name === 'string' && session.name.trim())
           || file.name.replace(/\.json$/i, '');
@@ -1815,6 +2064,12 @@ export default function THzAnalyzer() {
           className={`text-sm px-4 py-2 rounded-t border border-b-0 -mb-px transition ${activeTab === 'convolution' ? 'bg-white border-slate-400 text-slate-900 font-medium' : 'border-transparent text-slate-600 hover:text-slate-900'}`}
         >
           Conv / Deconv
+        </button>
+        <button
+          onClick={() => setActiveTab('arithmetic')}
+          className={`text-sm px-4 py-2 rounded-t border border-b-0 -mb-px transition ${activeTab === 'arithmetic' ? 'bg-white border-slate-400 text-slate-900 font-medium' : 'border-transparent text-slate-600 hover:text-slate-900'}`}
+        >
+          Waveform Math
         </button>
       </div>
 
@@ -3036,6 +3291,366 @@ export default function THzAnalyzer() {
               )}
             </>
           )}
+        </div>
+      </div>
+      )}
+
+      {activeTab === 'arithmetic' && (
+      <div className="p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <p className="text-xs uppercase tracking-wide text-slate-600 font-mono">Time-domain waveform math</p>
+          <button
+            onClick={addArithCard}
+            className="flex items-center gap-1.5 text-xs bg-slate-200 border border-slate-600 text-slate-900 rounded px-3 py-1.5 hover:bg-slate-300 transition"
+          >
+            <Sparkles size={12} /> Add new plot
+          </button>
+        </div>
+
+        {arithResults.length === 0 && (
+          <p className="text-xs text-slate-600">No plots yet. Click "Add new plot," then pick waveforms (loaded data from TDS &amp; FFT, or an earlier result from this tab) and an operation: show one as is, flip it (×−1), or add/subtract two waveforms point by point in the time domain.</p>
+        )}
+
+        {arithResults.map((card, index) => {
+          const color = /^#[0-9a-fA-F]{6}$/.test(card.color) ? card.color : COLORS[index % COLORS.length];
+          const needsB = arithNeedsB(card.operation);
+          const showIn = card.showInputs && card.operation !== 'none' && !card.error;
+          const autoX = card.time ? [card.time[0], card.time[card.time.length - 1]] : [0, 1];
+          const autoY = card.time ? paddedRange([card.amplitude, ...(showIn ? card.inputs.map((i) => i.ys) : [])]) : [-1, 1];
+          const xDomainEff = validDomain(convXDomains[card.id]) || autoX;
+          const yDomainEff = validDomain(convYDomains[card.id]) || autoY;
+          const sel = getConvSel(card.id);
+          const mode = getConvMode(card.id);
+          const opts = arithSourceOptions(index);
+          const groups = {};
+          opts.forEach((o) => { (groups[o.group] = groups[o.group] || []).push(o); });
+          const legendItems = [{ name: card.name, color }, ...(showIn ? card.inputs.map((inp, k) => ({ name: inp.name, color: INPUT_COLORS[k] })) : [])];
+          const sourceSelect = (value, key) => (
+            <select
+              value={value}
+              onChange={(e) => updateArithCard(card.id, { [key]: e.target.value })}
+              className="w-full bg-white border border-slate-400 rounded px-2 py-1.5 text-slate-800"
+            >
+              <option value="">— select —</option>
+              {Object.entries(groups).map(([g, items]) => (
+                <optgroup key={g} label={g}>
+                  {items.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          );
+
+          return (
+            <div key={card.id} className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <input
+                    value={card.name}
+                    onChange={(e) => updateArithCard(card.id, { name: e.target.value })}
+                    className="bg-white border border-slate-300 rounded px-2 py-1 text-sm font-semibold text-slate-900 w-48"
+                  />
+                  <select
+                    value={card.operation}
+                    onChange={(e) => updateArithCard(card.id, { operation: e.target.value })}
+                    className="bg-white border border-slate-400 rounded px-2 py-1 text-xs text-slate-800"
+                  >
+                    {ARITH_OPS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                  <input
+                    type="color"
+                    value={color}
+                    onChange={(e) => updateArithCard(card.id, { color: e.target.value })}
+                    className="w-7 h-7 rounded border border-slate-400 p-0 bg-transparent cursor-pointer flex-shrink-0"
+                    title="Pick line color"
+                  />
+                  <input
+                    value={card.color || color}
+                    onChange={(e) => updateArithCard(card.id, { color: e.target.value })}
+                    onBlur={(e) => { if (!/^#[0-9a-fA-F]{6}$/.test(e.target.value.trim())) updateArithCard(card.id, { color }); }}
+                    spellCheck={false}
+                    className="w-20 bg-white border border-slate-400 rounded px-1.5 py-1 text-xs text-slate-800 font-mono uppercase"
+                  />
+                </div>
+                <button onClick={() => removeArithCard(card.id)} className="text-slate-400 hover:text-red-600">
+                  <Trash2 size={14} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3 text-xs">
+                <label className="space-y-1">
+                  <span className="text-slate-900 block">Dataset A</span>
+                  {sourceSelect(card.sourceAId, 'sourceAId')}
+                </label>
+                {needsB && (
+                  <label className="space-y-1">
+                    <span className="text-slate-900 block">Dataset B {card.operation === 'subtract' ? '(subtracted from A)' : ''}</span>
+                    {sourceSelect(card.sourceBId, 'sourceBId')}
+                  </label>
+                )}
+              </div>
+
+              {card.operation !== 'none' && (
+                <label className="flex items-center gap-1.5 text-xs text-slate-900 mb-3">
+                  <input type="checkbox" checked={card.showInputs !== false} onChange={(e) => updateArithCard(card.id, { showInputs: e.target.checked })} className="accent-slate-700" />
+                  Show input waveforms (dashed) for comparison
+                </label>
+              )}
+
+              {card.error ? (
+                <p className="text-xs text-amber-800 bg-amber-50 border border-amber-300 rounded px-3 py-2">{card.error}</p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 text-xs">
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">X min ({timeUnit})</span>
+                      <NumberRangeField
+                        value={roundDisp(xDomainEff[0])}
+                        onCommit={(v) => setConvXDomains((prev) => ({ ...prev, [card.id]: [v, xDomainEff[1]] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">X max ({timeUnit})</span>
+                      <NumberRangeField
+                        value={roundDisp(xDomainEff[1])}
+                        onCommit={(v) => setConvXDomains((prev) => ({ ...prev, [card.id]: [xDomainEff[0], v] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">Y min (a.u.)</span>
+                      <NumberRangeField
+                        value={roundDisp(yDomainEff[0])}
+                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [card.id]: [v, yDomainEff[1]] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">Y max (a.u.)</span>
+                      <NumberRangeField
+                        value={roundDisp(yDomainEff[1])}
+                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [card.id]: [yDomainEff[0], v] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                  </div>
+                  <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                    <p className="text-xs text-slate-500">Result = {arithFormula(card)}</p>
+                    <div className="flex gap-1.5 flex-wrap">
+                      <button
+                        onClick={() => setConvModes((prev) => ({ ...prev, [card.id]: 'zoom' }))}
+                        title="Drag to zoom into a region"
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${mode === 'zoom' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
+                      >
+                        <ZoomIn size={12} /> Zoom
+                      </button>
+                      <button
+                        onClick={() => setConvModes((prev) => ({ ...prev, [card.id]: 'pan' }))}
+                        title="Drag to shift the view"
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${mode === 'pan' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
+                      >
+                        <Move size={12} /> Pan
+                      </button>
+                      <button onClick={() => resetConvView(card.id)} title="Reset to full view" className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition">
+                        <RotateCcw size={12} /> Reset
+                      </button>
+                      <span className="w-px bg-slate-300 mx-0.5" />
+                      <button onClick={() => openExportDialog(getConvChartRef(card.id), (card.name || 'waveform').replace(/[^a-z0-9_-]+/gi, '_'), legendItems, 'png')} className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition">
+                        <Download size={12} /> PNG
+                      </button>
+                      <button onClick={() => openExportDialog(getConvChartRef(card.id), (card.name || 'waveform').replace(/[^a-z0-9_-]+/gi, '_'), legendItems, 'svg')} className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition">
+                        <Download size={12} /> SVG
+                      </button>
+                      <button onClick={() => exportArithCsv(card)} className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition">
+                        <Download size={12} /> CSV
+                      </button>
+                      <button onClick={() => sendArithToTab1(card)} title="Copy this result into TDS &amp; FFT as a new dataset (FFT, metrics, snapshots)" className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition">
+                        {arithSentIds.includes(card.id) ? <><Check size={12} /> Sent</> : <><Send size={12} /> Send to TDS &amp; FFT</>}
+                      </button>
+                    </div>
+                  </div>
+                  {card.notes && card.notes.length > 0 && (
+                    <p className="text-xs text-slate-600 bg-slate-50 border border-slate-300 rounded px-3 py-1.5 mb-2">{card.notes.join(' ')}</p>
+                  )}
+                  <div
+                    className="h-80 select-none" ref={getConvChartRef(card.id)} onMouseDown={(e) => e.preventDefault()}
+                    style={{ cursor: mode === 'pan' ? 'grab' : 'crosshair', userSelect: 'none', WebkitUserSelect: 'none', MozUserSelect: 'none' }}
+                  >
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        margin={{ top: 15, right: 15, bottom: 40, left: 20 }}
+                        onMouseDown={(e) => handleConvMouseDown(e, card.id, xDomainEff, yDomainEff)}
+                        onMouseMove={(e) => handleConvMouseMove(e, card.id)}
+                        onMouseUp={() => handleConvMouseUp(card.id)}
+                        onMouseLeave={() => handleConvMouseLeave(card.id)}
+                        onDoubleClick={() => resetConvView(card.id)}
+                      >
+                        <CartesianGrid stroke="#cbd5e1" strokeDasharray="3 3" />
+                        <XAxis dataKey="x" type="number" domain={xDomainEff} allowDataOverflow ticks={niceTicks(xDomainEff[0], xDomainEff[1])} stroke="#334155" tick={{ fontSize: 11 }}
+                          label={{ value: `Time (${timeUnit})`, position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
+                        <YAxis domain={yDomainEff} allowDataOverflow ticks={niceTicks(yDomainEff[0], yDomainEff[1])} stroke="#334155" tick={{ fontSize: 11 }} width={72}
+                          tickFormatter={(v) => (v === 0 ? '0.00e+0' : v.toExponential(2))}
+                          label={{ value: 'E-field (a.u.)', angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
+                        <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => fmtTip(v, 'sci')} labelFormatter={(l) => fmtTipLabel(l, timeUnit)} />
+                        <Customized component={ChartBorder} />
+                        <ReferenceLine y={0} stroke="#94a3b8" strokeWidth={1} />
+                        {mode === 'zoom' && sel.x1 != null && sel.x2 != null && (
+                          <ReferenceArea x1={sel.x1} x2={sel.x2} y1={sel.y1} y2={sel.y2} strokeOpacity={0.4} stroke="#334155" fill="#334155" fillOpacity={0.15} />
+                        )}
+                        {showIn && card.inputs.map((inp, k) => (
+                          <Line key={inp.key} data={inp.chartData} dataKey="y" name={inp.name} stroke={INPUT_COLORS[k]} strokeDasharray={k === 0 ? '4 3' : '1.5 2.5'} dot={false} isAnimationActive={false} strokeWidth={1.1} />
+                        ))}
+                        <Line data={card.chartData} dataKey="y" name={card.name} stroke={color} dot={false} isAnimationActive={false} strokeWidth={1.6} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  {showIn && (
+                    <div className="flex flex-wrap gap-x-5 gap-y-1 justify-center pt-2 text-xs text-slate-800">
+                      {legendItems.map((li, k) => (
+                        <span key={k} className="inline-flex items-center gap-1.5">
+                          <span className="w-4 inline-block border-t-2" style={{ borderColor: li.color, borderStyle: k === 0 ? 'solid' : 'dashed' }} />
+                          {li.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+
+        <div className="rounded-lg border border-slate-400 bg-white p-4 shadow-sm">
+          <p className="text-xs uppercase tracking-wide text-slate-600 font-mono mb-2">Compare results</p>
+          {arithResults.filter((r) => !r.error).length === 0 ? (
+            <p className="text-xs text-slate-600">Add and configure at least one plot above to compare results here.</p>
+          ) : (() => {
+            const cmpAutoX = arithCompareEntries.length
+              ? [Math.min(...arithCompareEntries.map((e) => e.time[0])), Math.max(...arithCompareEntries.map((e) => e.time[e.time.length - 1]))]
+              : [0, 1];
+            const cmpAutoY = arithCompareEntries.length ? paddedRange(arithCompareEntries.map((e) => e.amplitude)) : [-1, 1];
+            const cmpX = validDomain(convXDomains[ARITH_COMPARE_ID]) || cmpAutoX;
+            const cmpY = validDomain(convYDomains[ARITH_COMPARE_ID]) || cmpAutoY;
+            const cmpMode = getConvMode(ARITH_COMPARE_ID);
+            const cmpSel = getConvSel(ARITH_COMPARE_ID);
+            const cmpLegend = arithCompareEntries.map((e) => ({ name: e.name, color: arithColorFor(e.id) }));
+            return (
+              <>
+                <div className="flex flex-wrap gap-3 mb-3 text-xs">
+                  {arithResults.filter((r) => !r.error).map((r) => (
+                    <label key={r.id} className="flex items-center gap-1.5">
+                      <input type="checkbox" checked={arithCompareIds.includes(r.id)} onChange={() => toggleArithCompare(r.id)} className="accent-slate-700" />
+                      <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: arithColorFor(r.id) }} />
+                      {r.name}
+                    </label>
+                  ))}
+                </div>
+                {arithCompareEntries.length === 0 ? (
+                  <p className="text-xs text-slate-600">Select one or more results above to overlay them here.</p>
+                ) : (
+                  <>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 text-xs">
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">X min ({timeUnit})</span>
+                      <NumberRangeField
+                        value={roundDisp(cmpX[0])}
+                        onCommit={(v) => setConvXDomains((prev) => ({ ...prev, [ARITH_COMPARE_ID]: [v, cmpX[1]] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">X max ({timeUnit})</span>
+                      <NumberRangeField
+                        value={roundDisp(cmpX[1])}
+                        onCommit={(v) => setConvXDomains((prev) => ({ ...prev, [ARITH_COMPARE_ID]: [cmpX[0], v] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">Y min (a.u.)</span>
+                      <NumberRangeField
+                        value={roundDisp(cmpY[0])}
+                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [ARITH_COMPARE_ID]: [v, cmpY[1]] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-slate-900 block">Y max (a.u.)</span>
+                      <NumberRangeField
+                        value={roundDisp(cmpY[1])}
+                        onCommit={(v) => setConvYDomains((prev) => ({ ...prev, [ARITH_COMPARE_ID]: [cmpY[0], v] }))}
+                        className="w-full bg-white border border-slate-400 rounded px-1.5 py-1 text-slate-800"
+                      />
+                    </label>
+                  </div>
+                  <div className="flex items-center justify-end mb-2 flex-wrap gap-2">
+                    <div className="flex gap-1.5 flex-wrap">
+                      <button
+                        onClick={() => setConvModes((prev) => ({ ...prev, [ARITH_COMPARE_ID]: 'zoom' }))}
+                        title="Drag to zoom into a region"
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${cmpMode === 'zoom' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
+                      >
+                        <ZoomIn size={12} /> Zoom
+                      </button>
+                      <button
+                        onClick={() => setConvModes((prev) => ({ ...prev, [ARITH_COMPARE_ID]: 'pan' }))}
+                        title="Drag to shift the view"
+                        className={`flex items-center gap-1 text-xs border rounded px-2 py-1 transition ${cmpMode === 'pan' ? 'bg-slate-200 border-slate-600 text-slate-900' : 'text-slate-800 border-slate-400 hover:border-slate-500 hover:bg-slate-100'}`}
+                      >
+                        <Move size={12} /> Pan
+                      </button>
+                      <button onClick={() => resetConvView(ARITH_COMPARE_ID)} title="Reset to full view" className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition">
+                        <RotateCcw size={12} /> Reset
+                      </button>
+                      <span className="w-px bg-slate-300 mx-0.5" />
+                      <button onClick={() => openExportDialog(getConvChartRef(ARITH_COMPARE_ID), 'thz_waveform_compare', cmpLegend, 'png')} className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition">
+                        <Download size={12} /> PNG
+                      </button>
+                      <button onClick={() => openExportDialog(getConvChartRef(ARITH_COMPARE_ID), 'thz_waveform_compare', cmpLegend, 'svg')} className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition">
+                        <Download size={12} /> SVG
+                      </button>
+                      <button onClick={exportArithCompareCsv} className="flex items-center gap-1 text-xs text-slate-800 hover:text-slate-900 border border-slate-400 rounded px-2 py-1 hover:border-slate-500 hover:bg-slate-100 transition">
+                        <Download size={12} /> CSV
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    className="h-96 select-none" ref={getConvChartRef(ARITH_COMPARE_ID)} onMouseDown={(e) => e.preventDefault()}
+                    style={{ cursor: cmpMode === 'pan' ? 'grab' : 'crosshair', userSelect: 'none', WebkitUserSelect: 'none', MozUserSelect: 'none' }}
+                  >
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        margin={{ top: 15, right: 15, bottom: 40, left: 20 }}
+                        onMouseDown={(e) => handleConvMouseDown(e, ARITH_COMPARE_ID, cmpX, cmpY)}
+                        onMouseMove={(e) => handleConvMouseMove(e, ARITH_COMPARE_ID)}
+                        onMouseUp={() => handleConvMouseUp(ARITH_COMPARE_ID)}
+                        onMouseLeave={() => handleConvMouseLeave(ARITH_COMPARE_ID)}
+                        onDoubleClick={() => resetConvView(ARITH_COMPARE_ID)}
+                      >
+                        <CartesianGrid stroke="#cbd5e1" strokeDasharray="3 3" />
+                        <XAxis dataKey="x" type="number" domain={cmpX} allowDataOverflow ticks={niceTicks(cmpX[0], cmpX[1])} stroke="#334155" tick={{ fontSize: 11 }}
+                          label={{ value: `Time (${timeUnit})`, position: 'insideBottom', offset: -5, fill: '#334155', fontSize: 11 }} />
+                        <YAxis domain={cmpY} allowDataOverflow ticks={niceTicks(cmpY[0], cmpY[1])} stroke="#334155" tick={{ fontSize: 11 }} width={72}
+                          tickFormatter={(v) => (v === 0 ? '0.00e+0' : v.toExponential(2))}
+                          label={{ value: 'E-field (a.u.)', angle: -90, position: 'insideLeft', fill: '#334155', fontSize: 11 }} />
+                        <Tooltip cursor={false} contentStyle={{ background: 'rgba(255, 255, 255, 0.80)', border: '1px solid rgba(148, 163, 184, 0.85)', fontSize: 12, backdropFilter: 'blur(1.5px)' }} labelStyle={{ color: '#1e293b' }} formatter={(v) => fmtTip(v, 'sci')} labelFormatter={(l) => fmtTipLabel(l, timeUnit)} />
+                        <Legend verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: 11, paddingTop: 20 }} />
+                        <Customized component={ChartBorder} />
+                        <ReferenceLine y={0} stroke="#94a3b8" strokeWidth={1} />
+                        {cmpMode === 'zoom' && cmpSel.x1 != null && cmpSel.x2 != null && (
+                          <ReferenceArea x1={cmpSel.x1} x2={cmpSel.x2} y1={cmpSel.y1} y2={cmpSel.y2} strokeOpacity={0.4} stroke="#334155" fill="#334155" fillOpacity={0.15} />
+                        )}
+                        {arithCompareEntries.map((e) => (
+                          <Line key={e.id} data={e.chartData} dataKey="y" name={e.name} stroke={arithColorFor(e.id)} dot={false} isAnimationActive={false} strokeWidth={1.4} />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  </>
+                )}
+              </>
+            );
+          })()}
         </div>
       </div>
       )}
